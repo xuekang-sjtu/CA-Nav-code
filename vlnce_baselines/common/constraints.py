@@ -18,7 +18,7 @@ class ConstraintsMonitor(nn.Module):
         self.resolution = config.MAP.MAP_RESOLUTION
         self.turn_angle = config.TASK_CONFIG.SIMULATOR.TURN_ANGLE
         self.device = device
-        self._load_from_disk()
+        self._create_model()  # Changed from _load_from_disk to use lavis auto-download
         
     def _create_model(self):
         self.model, vis_processors, text_processors = \

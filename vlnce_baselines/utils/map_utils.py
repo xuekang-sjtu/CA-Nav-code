@@ -160,7 +160,7 @@ def get_obstacle(map: np.ndarray, kernel_size: int=3) -> np.ndarray:
         min_size=64, # you can try different minimum object size
         connectivity=5)
     selem = disk(kernel_size)
-    obstacle = closing(obstacle, selem)
+    obstacle = closing(obstacle, )  # CPU-compat: scikit-image API change
     
     return obstacle.astype(bool)
 
@@ -171,7 +171,7 @@ def get_objects(map: np.ndarray, classes: List, kernel_size: int=3) -> Tuple:
     objects = np.zeros(map.shape[-2:])
     for i, obj in enumerate(map[map_channels:, ...]):
         obj = remove_small_objects(obj.astype(bool), min_size=64)
-        obj = closing(obj, selem=disk(kernel_size))
+        obj = closing(obj, footprint=disk(kernel_size))
         if i in navigable_index:
             navigable = np.logical_or(navigable, obj)
         else:
@@ -189,7 +189,7 @@ def get_explored_area(map: np.ndarray, kernel_size: int=3) -> np.ndarray:
     """
     explored_area = map[1, ...]
     selem = disk(kernel_size)
-    explored_area = closing(explored_area, selem)
+    explored_area = closing(explored_area, )  # CPU-compat: scikit-image API change
     explored_area = remove_small_objects(explored_area.astype(bool), min_size=400)
     
     return explored_area
@@ -216,7 +216,7 @@ def process_floor(map: np.ndarray, classes: List, kernel_size: int=3) -> np.ndar
     free_mask = np.logical_or(free_mask, navigable)
     free_space = explored_area * free_mask
     floor = remove_small_objects(free_space.astype(bool), min_size=400)
-    floor = closing(floor, selem=disk(kernel_size))
+    floor = closing(floor, footprint=disk(kernel_size))
     t2 = time.time()
     print("process floor cost time: ", t2 - t1)
     return floor
@@ -229,7 +229,7 @@ def find_frontiers(map: np.ndarray, classes: List) -> np.ndarray:
     image = np.zeros(map.shape[-2:], dtype=np.uint8)
     image = cv2.drawContours(image, contours, -1, (255, 255, 255), thickness=3)
     res = np.logical_and(floor, image)
-    res = dilation(res, selem=disk(2))
+    res = dilation(res, footprint=disk(2))
     res = remove_small_objects(res.astype(bool), min_size=64)
     
     return res.astype(np.uint8)

@@ -242,6 +242,10 @@ class RxRVLNCEDatasetV1(Dataset):
         deserialized = json.loads(json_str)
 
         for episode in deserialized["episodes"]:
+            # Filter instruction dict to only fields InstructionData accepts
+            if 'instruction' in episode and isinstance(episode['instruction'], dict):
+                episode['instruction'] = {k: v for k, v in episode['instruction'].items()
+                                          if k in ('instruction_text', 'instruction_tokens')}
             episode = VLNExtendedEpisode(**episode)
 
             if scenes_dir is not None:
@@ -252,9 +256,17 @@ class RxRVLNCEDatasetV1(Dataset):
 
                 episode.scene_id = os.path.join(scenes_dir, episode.scene_id)
 
-            episode.instruction = ExtendedInstructionData(
-                **episode.instruction
-            )
+            # Convert instruction to InstructionData (always, since attr doesn't coerce)
+            if hasattr(episode.instruction, 'instruction_text'):
+                episode.instruction = InstructionData(
+                    instruction_text=episode.instruction.instruction_text,
+                    instruction_tokens=episode.instruction.instruction_tokens
+                )
+            elif isinstance(episode.instruction, dict):
+                episode.instruction = InstructionData(
+                    instruction_text=episode.instruction['instruction_text'],
+                    instruction_tokens=episode.instruction.get('instruction_tokens', [])
+                )
             episode.instruction.split = self.config.SPLIT
             if episode.goals is not None:
                 for g_index, goal in enumerate(episode.goals):
