@@ -44,17 +44,9 @@ except:
     pass
 
 
-def run_exp(exp_name: str, exp_config: str, 
-            run_type: str, nprocesses: int, opts=None) -> None:
+def run_exp(exp_name: str, exp_config: str,
+            run_type: str, nprocesses: int, opts=None, cross_floor_filter: str = None) -> None:
     r"""Runs experiment given mode and config
-
-    Args:
-        exp_config: path to config file.
-        run_type: "train" or "eval.
-        opts: list of strings of additional config options.
-
-    Returns:
-        None.
     """
     config = get_config(exp_config, opts)
     config.defrost()
@@ -65,20 +57,36 @@ def run_exp(exp_name: str, exp_config: str,
     config.VIDEO_DIR += exp_name
     config.LOG_FILE = exp_name + '_' + config.LOG_FILE
     config.freeze()
-    
+
     os.makedirs(config.RESULTS_DIR, exist_ok=True)
     os.makedirs(config.EVAL_CKPT_PATH_DIR, exist_ok=True)
     os.system("mkdir -p data/logs/running_log")
     logger.add_filehandler('data/logs/running_log/' + config.LOG_FILE)
     logger.info(f"hyper parameters:\n{config.EVAL}")
     logger.info(f"llm reply file: {config.TASK_CONFIG.DATASET.LLM_REPLYS_PATH}")
-    
-    # Dataset split, start multi-processes across the available GPUs.
+
     num_devices = max(1, torch.cuda.device_count())
     print(f'num devices: {num_devices}, num processes: {nprocesses}')
     with open(config.TASK_CONFIG.DATASET.LLM_REPLYS_PATH, 'r') as f:
         llm_reply_dataset = json.load(f)
     episode_ids = list(llm_reply_dataset.keys())
+
+    # Apply cross-floor filter
+    if cross_floor_filter is not None:
+        CROSS_FLOOR_DIR = os.path.join(PROJECT_ROOT, "datasets", "cross_floor_episodes")
+        _FILTERS = {
+            "r2r-100": "r2r_v1-2_opennav100_cross_floor.json",
+            "r2r-all": "r2r_v1-3_cross_floor.json",
+            "rxr-100": "rxr_opennav100_guide_cross_floor.json",
+            "rxr-all": "rxr_val_unseen_guide_cross_floor.json",
+        }
+        filepath = os.path.join(CROSS_FLOOR_DIR, _FILTERS[cross_floor_filter])
+        with open(filepath) as f:
+            cross_ids = set(json.load(f))
+        before = len(episode_ids)
+        episode_ids = [eid for eid in episode_ids if int(eid) in cross_ids]
+        print(f"Cross-floor filter [{cross_floor_filter}]: {before} -> {len(episode_ids)} episodes")
+
     split_episode_ids = [episode_ids[i::nprocesses] for i in range(nprocesses)]
 
     configs = []
@@ -166,6 +174,13 @@ if __name__ == "__main__":
         help="path to config yaml containing info about experiment",
     )
     parser.add_argument(
+        "--cross-floor-filter",
+        type=str,
+        default=None,
+        choices=["r2r-100", "r2r-all", "rxr-100", "rxr-all"],
+        help="Only run cross-floor episodes",
+    )
+    parser.add_argument(
         "opts",
         default=None,
         nargs=argparse.REMAINDER,
@@ -173,6 +188,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     print(args)
-    
+
     mp.set_start_method('spawn', force=True)
     run_exp(**vars(args))
