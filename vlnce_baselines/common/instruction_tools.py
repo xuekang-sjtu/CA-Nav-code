@@ -8,8 +8,8 @@ from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-R2R_VALUNSEEN_PATH = "data/datasets/R2R_VLNCE_v1-3_preprocessed/val_unseen/val_unseen.json.gz"
-DIR_NAME = "data/datasets/LLM_REPLYS_VAL_UNSEEN/"
+R2R_VALUNSEEN_PATH = "../../datasets/datasets/R2R_VLNCE_v1-3_preprocessed/val_unseen/val_unseen.json.gz"
+DIR_NAME = "../../datasets/datasets/LLM_REPLYS_VAL_UNSEEN/"
 FILE_NAME = "llm_reply_valunseen"
 TEMP_SAVE_PATH = '/data/ckh/Zero-Shot-VLN-FusionMap-mp/tests/llm_reply_valunseen_temp.json'
 dones = 0
