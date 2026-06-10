@@ -83,8 +83,10 @@ def run_exp(exp_name: str, exp_config: str,
         filepath = os.path.join(CROSS_FLOOR_DIR, _FILTERS[cross_floor_filter])
         with open(filepath) as f:
             cross_ids = set(json.load(f))
+        # Build string set for matching (JSON has ints for r2r, strings for rxr-all)
+        cross_ids_str = set(str(x) for x in cross_ids)
         before = len(episode_ids)
-        episode_ids = [eid for eid in episode_ids if int(eid) in cross_ids]
+        episode_ids = [eid for eid in episode_ids if eid in cross_ids_str or int(eid) in cross_ids]
         print(f"Cross-floor filter [{cross_floor_filter}]: {before} -> {len(episode_ids)} episodes")
 
     split_episode_ids = [episode_ids[i::nprocesses] for i in range(nprocesses)]
