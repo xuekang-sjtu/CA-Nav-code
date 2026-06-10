@@ -245,7 +245,7 @@ def get_traversible_area(map: np.ndarray, classes: List) -> np.ndarray:
     untraversible = np.logical_or(objects, obstacles)
     untraversible[navigable == 1] = 0
     untraversible = remove_small_objects(untraversible, min_size=64)
-    untraversible = closing(untraversible, selem=disk(3))
+    untraversible = closing(untraversible, footprint=disk(3))
     traversible = 1 - untraversible
 
     return traversible
@@ -310,7 +310,7 @@ def process_destination(destination: np.ndarray, full_map: np.ndarray, classes: 
     """
     floor = process_floor(full_map, classes)
     traversible = get_traversible_area(full_map, classes)
-    destination = dilation(destination, selem=disk(5))
+    destination = dilation(destination, footprint=disk(5))
     destination = remove_small_objects(destination.astype(bool), min_size=64).astype(np.uint8)
     nb_components, output, stats, centroids = cv2.connectedComponentsWithStats(destination)
     if len(centroids) > 1:
@@ -326,7 +326,7 @@ def process_destination2(destination: np.ndarray, floor: np.ndarray, traversible
     destination could be some small objects, so we dilate them first
     and then remove small objects
     """
-    destination = dilation(destination, selem=disk(5))
+    destination = dilation(destination, footprint=disk(5))
     destination = remove_small_objects(destination.astype(bool), min_size=64).astype(np.uint8)
     nb_components, output, stats, centroids = cv2.connectedComponentsWithStats(destination)
     if len(centroids) > 1:
@@ -423,7 +423,7 @@ def collision_check(last_pose: np.ndarray, current_pose: np.ndarray,
                 y1 = int(y0 + dy)
                 x1, y1 = threshold_poses([x1, y1], collision_map.shape)
                 collision_map[x1, y1] = 1
-        collision_map = closing(collision_map, selem=disk(1))
+        collision_map = closing(collision_map, footprint=disk(1))
         
     return collision_map
 
