@@ -61,7 +61,12 @@ class Semantic_Mapping(nn.Module):
         
         self.fov = args.HFOV
         self.min_z = args.MIN_Z # a lager min_z could lost some information on the floor, 2cm is ok
-        self.device = args.DEVICE
+        device_str = getattr(args, 'DEVICE', None)
+        import torch
+        if device_str and 'cuda' in str(device_str):
+            self.device = device_str
+        else:
+            self.device = None  # CPU mode - tensors stay on CPU
         self.du_scale = args.DU_SCALE # depth unit
         self.visualize = args.VISUALIZE
         self.screen_w = args.FRAME_WIDTH

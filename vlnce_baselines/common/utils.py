@@ -4,14 +4,11 @@ import numpy as np
 import torch
 import torch.distributed as distr
 
-def gather_list_and_concat(list_of_nums,world_size):
+def gather_list_and_concat(list_of_nums, world_size):
     if not torch.is_tensor(list_of_nums):
-        tensor = torch.Tensor(list_of_nums).cuda()
+        tensor = torch.Tensor(list_of_nums).cpu()
     else:
-        if list_of_nums.is_cuda == False:
-            tensor = list_of_nums.cuda()
-        else:
-            tensor = list_of_nums
+        tensor = list_of_nums.cpu() if list_of_nums.is_cuda else list_of_nums
     gather_t = [torch.ones_like(tensor) for _ in
                 range(world_size)]
     distr.all_gather(gather_t, tensor)
@@ -24,7 +21,6 @@ def seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
 
 def get_device(device_number):
     device = torch.device("cpu")

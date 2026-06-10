@@ -1,7 +1,14 @@
 import argparse
 import random
 import os
+import sys
 import json
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GROUNDING_DINO_ROOT = os.path.join(PROJECT_ROOT, "models", "GroundingDINO")
+if os.path.isdir(GROUNDING_DINO_ROOT):
+    sys.path.insert(0, GROUNDING_DINO_ROOT)
+
 from copy import deepcopy
 import glob
 from pprint import pprint
@@ -17,7 +24,25 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.config.default import get_config
 from vlnce_baselines.common.utils import seed_everything
-    
+
+os.environ["HF_HUB_OFFLINE"] = "1"  # Use cached HF models
+os.environ["HF_HOME"] = "/home/agent/.cache/huggingface"  # fallback for any other HF models
+
+# Monkey-patch supervision 0.4.0 Detections to add mask/box_area attrs
+try:
+    import supervision as _sv
+    _Detections = _sv.Detections
+    if not hasattr(_Detections, "mask"):
+        _Detections.__annotations__["mask"] = "np.ndarray"
+    if not hasattr(_Detections, "box_area"):
+        @property
+        def _box_area(self):
+            x1,y1,x2,y2 = self.xyxy.T
+            return (x2-x1) * (y2-y1)
+        _Detections.box_area = _box_area
+except:
+    pass
+
 
 def run_exp(exp_name: str, exp_config: str, 
             run_type: str, nprocesses: int, opts=None) -> None:
@@ -48,8 +73,8 @@ def run_exp(exp_name: str, exp_config: str,
     logger.info(f"hyper parameters:\n{config.EVAL}")
     logger.info(f"llm reply file: {config.TASK_CONFIG.DATASET.LLM_REPLYS_PATH}")
     
-    # dataset split, start multi-processes
-    num_devices = torch.cuda.device_count()
+    # Dataset split, start multi-processes across the available GPUs.
+    num_devices = max(1, torch.cuda.device_count())
     print(f'num devices: {num_devices}, num processes: {nprocesses}')
     with open(config.TASK_CONFIG.DATASET.LLM_REPLYS_PATH, 'r') as f:
         llm_reply_dataset = json.load(f)
@@ -99,6 +124,9 @@ def run_exp(exp_name: str, exp_config: str,
         json.dump(summary_metrics, f, indent=2)
 
 def worker(config):
+    import os as _os
+    _os.environ["HF_HOME"] = "/home/agent/.cache/huggingface"  # fallback for any other HF models
+    _os.environ["HF_HUB_OFFLINE"] = "1"
     seed_everything(config.TASK_CONFIG.SEED)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = False

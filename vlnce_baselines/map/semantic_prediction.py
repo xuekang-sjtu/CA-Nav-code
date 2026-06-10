@@ -17,6 +17,21 @@ from vlnce_baselines.map.RepViTSAM.setup_repvit_sam import build_sam_repvit
 from vlnce_baselines.common.utils import get_device
 
 
+def _annotate_masks_v04(scene, detections):
+    """Draw masks on scene image for supervision 0.4.0 compatibility."""
+    import cv2
+    masks = getattr(detections, "mask", None)
+    if masks is None or len(masks) == 0:
+        return scene
+    image = scene.copy()
+    for mask in masks:
+        mask_bool = mask.astype(bool)
+        if mask_bool.any():
+            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(image, contours, -1, (0, 255, 0), 2)
+    return image
+
+
 VisualObservation = Union[torch.Tensor, np.ndarray]
 
 

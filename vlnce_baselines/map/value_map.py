@@ -44,7 +44,7 @@ class ValueMap(nn.Module):
         #                torch.cuda.is_available() else torch.device("cpu"))
         self.vis_image = np.ones((580, 480 * 3 + 20 * 4, 3)).astype(np.uint8) * 255
         self.previous_floor = np.zeros(self.shape)
-        self._load_model_from_disk()
+        self._create_model()  # Changed from _load_model_from_disk to use lavis auto-download
         self.model.eval()
     
     def _create_model(self):

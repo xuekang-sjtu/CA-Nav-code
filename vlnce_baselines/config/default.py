@@ -12,7 +12,7 @@ from habitat_extensions.config.default import get_extended_config as get_task_co
 _C = CN()
 _C.BASE_TASK_CONFIG_PATH = "habitat_extensions/config/zs_vlnce_task.yaml"
 _C.TASK_CONFIG = CN()  # task_config will be stored as a config node
-_C.TRAINER_NAME = "ZS-Evaluator"
+_C.TRAINER_NAME = "ZS-Evaluator-mp"
 _C.ENV_NAME = "VLNCEZeroShotEnv"
 _C.SIMULATOR_GPU_IDS = [0]
 _C.VIDEO_OPTION = []  # options: "disk", "tensorboard"
@@ -32,10 +32,10 @@ _C.KEYBOARD_CONTROL = 0
 # -----------------------------------------------------------------------------
 _C.MAP = CN()
 _C.MAP.GROUNDING_DINO_CONFIG_PATH = "data/grounded_sam/GroundingDINO_SwinT_OGC.py"
-_C.MAP.GROUNDING_DINO_CHECKPOINT_PATH = "data/grounded_sam/groundingdino_swint_ogc.pth"
-_C.MAP.SAM_CHECKPOINT_PATH = "data/grounded_sam/sam_vit_h_4b8939.pth"
+_C.MAP.GROUNDING_DINO_CHECKPOINT_PATH = "../models/groundingdino_swint_ogc.pth"
+_C.MAP.SAM_CHECKPOINT_PATH = "../models/sam_vit_b_01ec64.pth"
 _C.MAP.RepViTSAM_CHECKPOINT_PATH = "data/grounded_sam/repvit_sam.pt"
-_C.MAP.SAM_ENCODER_VERSION = "vit_h"
+_C.MAP.SAM_ENCODER_VERSION = "vit_b"
 _C.MAP.BOX_THRESHOLD = 0.25
 _C.MAP.TEXT_THRESHOLD = 0.25
 _C.MAP.FRAME_WIDTH = 160
@@ -113,3 +113,5 @@ def get_config(
 
     config.freeze()
     return config
+
+cfg = _C

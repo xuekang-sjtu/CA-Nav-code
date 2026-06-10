@@ -51,10 +51,11 @@ def get_reply(client, id, prompt, max_retry_times=5, retry_interval_initial=1):
                     }
                 ],
                 # model="gpt-3.5-turbo",
-                model="gpt-4",
-                temperature=0
+                model="qwen3.5-35b-a3b-gptq-int4",
+                temperature=0,
+                max_tokens=2048
             )
-            reply = eval(chat_completion.choices[0].message.content.strip())
+            msg = chat_completion.choices[0].message; reply = json.loads((msg.content or msg.reasoning or "").strip())
             res = {str(id): reply}
             with open(TEMP_SAVE_PATH, 'a') as f:
                 json.dump(res, f, indent=4, ensure_ascii=False)
@@ -140,8 +141,8 @@ def natural_sort_key(s):
 
 def main():
     client = OpenAI(
-        api_key="dc4e8ca91bb9509727662d60ff4ad16b",
-        base_url="https://flag.smarttrot.com/v1/"
+        api_key=os.environ.get("OPENAI_API_KEY", "none"),
+        base_url=os.environ.get("OPENAI_BASE_URL", "https://models.sjtu.edu.cn/api/v1"),
     )
     
     if os.path.exists(DIR_NAME):
@@ -163,7 +164,7 @@ def main():
     # prompts = regenerate_exist_keys(exist_replys)
     
     
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         results = [executor.submit(get_reply, client, id, prompt) for id, prompt in prompts.items()]
         query2res = {job.result()[0]: job.result()[1] for job in as_completed(results)}
     
