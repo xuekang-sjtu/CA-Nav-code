@@ -7,11 +7,13 @@ import random
 from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
-R2R_VALUNSEEN_PATH = "../../datasets/datasets/R2R_VLNCE_v1-3_preprocessed/val_unseen/val_unseen.json.gz"
-DIR_NAME = "../../datasets/datasets/LLM_REPLYS_VAL_UNSEEN/"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+R2R_VALUNSEEN_PATH = os.path.join(
+    PROJECT_ROOT, "datasets", "datasets", "R2R_VLNCE_v1-3_preprocessed", "val_unseen", "val_unseen.json.gz"
+)
+DIR_NAME = os.path.join(PROJECT_ROOT, "datasets", "datasets", "LLM_REPLYS_VAL_UNSEEN")
 FILE_NAME = "llm_reply_valunseen"
-TEMP_SAVE_PATH = '/data/ckh/Zero-Shot-VLN-FusionMap-mp/tests/llm_reply_valunseen_temp.json'
+TEMP_SAVE_PATH = os.path.join(DIR_NAME, "llm_reply_valunseen_temp.json")
 dones = 0
 
 

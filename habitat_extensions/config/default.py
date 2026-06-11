@@ -42,7 +42,7 @@ _C.TASK.NDTW.TYPE = "NDTW"
 _C.TASK.NDTW.SPLIT = "val_unseen"
 _C.TASK.NDTW.FDTW = True  # False: DTW
 _C.TASK.NDTW.GT_PATH = (
-    "../../datasets/datasets/R2R_VLNCE_v1-2_preprocessed/{split}/{split}_gt.json"
+    "../datasets/datasets/R2R_VLNCE_v1-3_preprocessed/{split}/{split}_gt.json.gz"
 )
 _C.TASK.NDTW.SUCCESS_DISTANCE = 3.0
 
@@ -106,7 +106,7 @@ _C.TASK.TOP_DOWN_MAP_VLNCE.DRAW_SHORTEST_PATH = False
 _C.TASK.TOP_DOWN_MAP_VLNCE.DRAW_REFERENCE_PATH = False
 _C.TASK.TOP_DOWN_MAP_VLNCE.DRAW_FIXED_WAYPOINTS = False
 _C.TASK.TOP_DOWN_MAP_VLNCE.DRAW_MP3D_AGENT_PATH = False
-_C.TASK.TOP_DOWN_MAP_VLNCE.GRAPHS_FILE = "data/connectivity_graphs.pkl"
+_C.TASK.TOP_DOWN_MAP_VLNCE.GRAPHS_FILE = "../datasets/connectivity/connectivity_graphs.pkl"
 _C.TASK.TOP_DOWN_MAP_VLNCE.FOG_OF_WAR = CN()
 _C.TASK.TOP_DOWN_MAP_VLNCE.FOG_OF_WAR.DRAW = False
 _C.TASK.TOP_DOWN_MAP_VLNCE.FOG_OF_WAR.FOV = 79
@@ -115,7 +115,7 @@ _C.TASK.TOP_DOWN_MAP_VLNCE.FOG_OF_WAR.VISIBILITY_DIST = 5.0
 # ----------------------------------------------------------------------------
 # DATASET EXTENSIONS
 # ----------------------------------------------------------------------------
-_C.DATASET.EPISODES_ALLOWED = [701]
+_C.DATASET.EPISODES_ALLOWED = None
 # _C.DATASET.EPISODES_ALLOWED = [389]
 
 

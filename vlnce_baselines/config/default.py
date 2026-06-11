@@ -31,10 +31,10 @@ _C.KEYBOARD_CONTROL = 0
 # MAP CONFIG
 # -----------------------------------------------------------------------------
 _C.MAP = CN()
-_C.MAP.GROUNDING_DINO_CONFIG_PATH = "data/grounded_sam/GroundingDINO_SwinT_OGC.py"
+_C.MAP.GROUNDING_DINO_CONFIG_PATH = "../models/groundingdino/config/GroundingDINO_SwinT_OGC.py"
 _C.MAP.GROUNDING_DINO_CHECKPOINT_PATH = "../models/groundingdino_swint_ogc.pth"
 _C.MAP.SAM_CHECKPOINT_PATH = "../models/sam_vit_b_01ec64.pth"
-_C.MAP.RepViTSAM_CHECKPOINT_PATH = "data/grounded_sam/repvit_sam.pt"
+_C.MAP.RepViTSAM_CHECKPOINT_PATH = "../models/repvit_sam.pt"
 _C.MAP.SAM_ENCODER_VERSION = "vit_b"
 _C.MAP.BOX_THRESHOLD = 0.25
 _C.MAP.TEXT_THRESHOLD = 0.25

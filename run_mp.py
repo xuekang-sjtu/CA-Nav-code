@@ -5,9 +5,12 @@ import sys
 import json
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GROUNDING_DINO_ROOT = os.path.join(PROJECT_ROOT, "models", "groundingdino")
-if os.path.isdir(GROUNDING_DINO_ROOT):
-    sys.path.insert(0, GROUNDING_DINO_ROOT)
+MODELS_ROOT = os.path.join(PROJECT_ROOT, "models")
+GROUNDING_DINO_ROOT = os.path.join(MODELS_ROOT, "groundingdino")
+LOCAL_BERT_ROOT = os.path.join(MODELS_ROOT, "bert-base-uncased")
+if os.path.isdir(GROUNDING_DINO_ROOT) and MODELS_ROOT not in sys.path:
+    # Import path must point to the parent of the `groundingdino` package.
+    sys.path.insert(0, MODELS_ROOT)
 
 from copy import deepcopy
 import glob
@@ -25,8 +28,14 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 from vlnce_baselines.config.default import get_config
 from vlnce_baselines.common.utils import seed_everything
 
-os.environ["HF_HUB_OFFLINE"] = "1"  # Use cached HF models
-os.environ["HF_HOME"] = "/home/agent/.cache/huggingface"  # fallback for any other HF models
+os.environ["HF_HUB_OFFLINE"] = os.environ.get("HF_HUB_OFFLINE", "1")
+os.environ["TRANSFORMERS_OFFLINE"] = os.environ.get("TRANSFORMERS_OFFLINE", "1")
+os.environ["HF_HOME"] = os.environ.get("HF_HOME", os.path.join(os.path.expanduser("~"), ".cache", "huggingface"))
+os.environ["GLOG_minloglevel"] = os.environ.get("GLOG_minloglevel", "2")
+os.environ["MAGNUM_LOG"] = os.environ.get("MAGNUM_LOG", "quiet")
+os.environ["HABITAT_SIM_LOG"] = os.environ.get("HABITAT_SIM_LOG", "quiet")
+if os.path.isdir(LOCAL_BERT_ROOT):
+    os.environ.setdefault("GROUNDINGDINO_TEXT_ENCODER_PATH", LOCAL_BERT_ROOT)
 
 # Monkey-patch supervision 0.4.0 Detections to add mask/box_area attrs
 try:
@@ -67,7 +76,14 @@ def run_exp(exp_name: str, exp_config: str,
 
     num_devices = max(1, torch.cuda.device_count())
     print(f'num devices: {num_devices}, num processes: {nprocesses}')
-    with open(config.TASK_CONFIG.DATASET.LLM_REPLYS_PATH, 'r') as f:
+    llm_reply_path = config.TASK_CONFIG.DATASET.LLM_REPLYS_PATH
+    if not os.path.exists(llm_reply_path):
+        raise FileNotFoundError(
+            "Missing CA-Nav LLM reply file: "
+            f"{llm_reply_path}. Download the precomputed file or generate it with "
+            "CA-Nav/vlnce_baselines/common/instruction_tools.py."
+        )
+    with open(llm_reply_path, 'r') as f:
         llm_reply_dataset = json.load(f)
     episode_ids = list(llm_reply_dataset.keys())
 
@@ -135,8 +151,14 @@ def run_exp(exp_name: str, exp_config: str,
 
 def worker(config):
     import os as _os
-    _os.environ["HF_HOME"] = "/home/agent/.cache/huggingface"  # fallback for any other HF models
-    _os.environ["HF_HUB_OFFLINE"] = "1"
+    _os.environ["HF_HOME"] = os.environ["HF_HOME"]
+    _os.environ["HF_HUB_OFFLINE"] = os.environ["HF_HUB_OFFLINE"]
+    _os.environ["TRANSFORMERS_OFFLINE"] = os.environ["TRANSFORMERS_OFFLINE"]
+    _os.environ["GLOG_minloglevel"] = os.environ["GLOG_minloglevel"]
+    _os.environ["MAGNUM_LOG"] = os.environ["MAGNUM_LOG"]
+    _os.environ["HABITAT_SIM_LOG"] = os.environ["HABITAT_SIM_LOG"]
+    if "GROUNDINGDINO_TEXT_ENCODER_PATH" in os.environ:
+        _os.environ["GROUNDINGDINO_TEXT_ENCODER_PATH"] = os.environ["GROUNDINGDINO_TEXT_ENCODER_PATH"]
     seed_everything(config.TASK_CONFIG.SEED)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = False
