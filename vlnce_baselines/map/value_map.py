@@ -14,7 +14,10 @@ from habitat import Config
 from collections import Sequence
 from typing import Union, Tuple, List
 from lavis.models import load_model_and_preprocess
+from lavis.models.blip2_models.blip2 import Blip2Base
+from lavis.models.blip2_models.Qformer import BertLMHeadModel
 from skimage.morphology import remove_small_objects
+from transformers import BertConfig, BertTokenizer
 
 from vlnce_baselines.utils.map_utils import *
 from vlnce_baselines.utils.visualization import *
@@ -46,8 +49,40 @@ class ValueMap(nn.Module):
         self.previous_floor = np.zeros(self.shape)
         self._create_model()  # Changed from _load_model_from_disk to use lavis auto-download
         self.model.eval()
+
+    def _patch_lavis_bert(self):
+        """Point LAVIS' hard-coded BERT lookups at the benchmark's shared
+        local checkpoint using a relative path from `CA-Nav/`."""
+        ca_nav_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        local_bert_path = os.path.normpath(os.path.join(ca_nav_root, "../models/bert-base-uncased"))
+
+        def _init_tokenizer_from_local(self):
+            tokenizer = BertTokenizer.from_pretrained(local_bert_path, local_files_only=True)
+            tokenizer.add_special_tokens({"bos_token": "[DEC]"})
+            return tokenizer
+
+        original_bert_config_from_pretrained = BertConfig.from_pretrained
+
+        def _bert_config_from_local(pretrained_model_name_or_path, *args, **kwargs):
+            if pretrained_model_name_or_path == "bert-base-uncased":
+                pretrained_model_name_or_path = local_bert_path
+                kwargs.setdefault("local_files_only", True)
+            return original_bert_config_from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+
+        original_qformer_from_pretrained = BertLMHeadModel.from_pretrained
+
+        def _qformer_from_local(pretrained_model_name_or_path, *args, **kwargs):
+            if pretrained_model_name_or_path == "bert-base-uncased":
+                pretrained_model_name_or_path = local_bert_path
+                kwargs.setdefault("local_files_only", True)
+            return original_qformer_from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+
+        Blip2Base.init_tokenizer = _init_tokenizer_from_local
+        BertConfig.from_pretrained = _bert_config_from_local
+        BertLMHeadModel.from_pretrained = _qformer_from_local
     
     def _create_model(self):
+        self._patch_lavis_bert()
         self.model, vis_processors, text_processors = \
             load_model_and_preprocess(
                 "blip2_image_text_matching", 

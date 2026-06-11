@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 from PIL import Image
@@ -8,6 +9,8 @@ from habitat import Config
 from collections import Sequence
 from vlnce_baselines.utils.map_utils import *
 from lavis.models import load_model_and_preprocess
+from lavis.models.blip_models.blip import BlipBase
+from transformers import BertTokenizer
 from vlnce_baselines.utils.constant import direction_mapping
 
 
@@ -19,8 +22,24 @@ class ConstraintsMonitor(nn.Module):
         self.turn_angle = config.TASK_CONFIG.SIMULATOR.TURN_ANGLE
         self.device = device
         self._create_model()  # Changed from _load_from_disk to use lavis auto-download
+
+    def _patch_lavis_tokenizer(self):
+        """Point BLIP-VQA's hard-coded BERT tokenizer lookup at the benchmark's
+        shared local checkpoint using a relative path from `CA-Nav/`."""
+        ca_nav_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        local_bert_path = os.path.normpath(os.path.join(ca_nav_root, "../models/bert-base-uncased"))
+
+        def _init_tokenizer_from_local(self):
+            tokenizer = BertTokenizer.from_pretrained(local_bert_path, local_files_only=True)
+            tokenizer.add_special_tokens({"bos_token": "[DEC]"})
+            tokenizer.add_special_tokens({"additional_special_tokens": ["[ENC]"]})
+            tokenizer.enc_token_id = tokenizer.additional_special_tokens_ids[0]
+            return tokenizer
+
+        BlipBase.init_tokenizer = _init_tokenizer_from_local
         
     def _create_model(self):
+        self._patch_lavis_tokenizer()
         self.model, vis_processors, text_processors = \
             load_model_and_preprocess("blip_vqa", model_type="vqav2", device=self.device, is_eval=True)
         self.vis_processors = vis_processors["eval"]

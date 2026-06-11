@@ -141,17 +141,21 @@ def get_point_cloud_from_z_t(Y_t, camera_matrix, device, scale=1):
     """
     # Y_t.shape = (batchsize, H, W)
     # grid_x.shape = grid_z.shape = (W, H)
+    actual_device = Y_t.device
     grid_x, grid_z = torch.meshgrid(torch.arange(Y_t.shape[-1]), # grid_x range: [0, H - 1]
                                     torch.arange(Y_t.shape[-2] - 1, -1, -1)) # grid_z range: [W - 1, 0]
-    grid_x = grid_x.transpose(1, 0).to(device) # (H, W)
-    grid_z = grid_z.transpose(1, 0).to(device) # (H, W)
+    grid_x = grid_x.transpose(1, 0).to(actual_device) # (H, W)
+    grid_z = grid_z.transpose(1, 0).to(actual_device) # (H, W)
     grid_x = grid_x.unsqueeze(0).expand(Y_t.size()) # (batchsize, H, W)
     grid_z = grid_z.unsqueeze(0).expand(Y_t.size() )# (batchsize, H, W)
+    xc = torch.as_tensor(camera_matrix.xc, device=actual_device, dtype=Y_t.dtype)
+    zc = torch.as_tensor(camera_matrix.zc, device=actual_device, dtype=Y_t.dtype)
+    f = torch.as_tensor(camera_matrix.f, device=actual_device, dtype=Y_t.dtype)
 
-    X_t = (grid_x[:, ::scale, ::scale] - camera_matrix.xc) * \
-        Y_t[:, ::scale, ::scale] / camera_matrix.f
-    Z_t = (grid_z[:, ::scale, ::scale] - camera_matrix.zc) * \
-        Y_t[:, ::scale, ::scale] / camera_matrix.f
+    X_t = (grid_x[:, ::scale, ::scale] - xc) * \
+        Y_t[:, ::scale, ::scale] / f
+    Z_t = (grid_z[:, ::scale, ::scale] - zc) * \
+        Y_t[:, ::scale, ::scale] / f
 
     XYZ = torch.stack(
         (X_t, Y_t[:, ::scale, ::scale], Z_t), dim=len(Y_t.size()))
@@ -172,8 +176,10 @@ def transform_camera_view_t(
     Output:
         XYZ : ...x3
     """
+    actual_device = XYZ.device
     R = ru.get_r_matrix([1., 0., 0.], angle=np.deg2rad(camera_elevation_degree))
-    XYZ = torch.matmul(XYZ.reshape(-1, 3), torch.from_numpy(R).transpose(1, 0).to(device)).reshape(XYZ.shape)
+    R_t = torch.from_numpy(R).transpose(1, 0).to(device=actual_device, dtype=XYZ.dtype)
+    XYZ = torch.matmul(XYZ.reshape(-1, 3), R_t).reshape(XYZ.shape)
     XYZ[..., 2] = XYZ[..., 2] + sensor_height
     
     return XYZ
@@ -190,8 +196,10 @@ def transform_pose_t(XYZ, current_pose, device):
     Output:
         XYZ : ...x3
     """
+    actual_device = XYZ.device
     R = ru.get_r_matrix([0., 0., 1.], angle=current_pose[2] - np.pi / 2.)
-    XYZ = torch.matmul(XYZ.reshape(-1, 3), torch.from_numpy(R).transpose(1, 0).to(device)).reshape(XYZ.shape)
+    R_t = torch.from_numpy(R).transpose(1, 0).to(device=actual_device, dtype=XYZ.dtype)
+    XYZ = torch.matmul(XYZ.reshape(-1, 3), R_t).reshape(XYZ.shape)
     XYZ[..., 0] += current_pose[0]
     XYZ[..., 1] += current_pose[1]
     
