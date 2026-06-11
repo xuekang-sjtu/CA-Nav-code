@@ -71,7 +71,18 @@ class ConstraintsMonitor(nn.Module):
         use grounded-sam's detections to check object
         """
         class_ids = current_detection.class_id
-        class_names = [classes[i] for i in class_ids]
+        valid_class_ids = []
+        for class_id in class_ids:
+            if class_id is None:
+                continue
+            try:
+                class_index = int(class_id)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= class_index < len(classes):
+                valid_class_ids.append(class_index)
+
+        class_names = [classes[i] for i in valid_class_ids]
         if object in class_names:
             return True
         else:
