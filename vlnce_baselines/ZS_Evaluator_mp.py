@@ -5,6 +5,7 @@ import queue
 import copy
 import gzip
 import json
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
@@ -12,6 +13,7 @@ from fastdtw import fastdtw
 from typing import List, Any, Dict
 from collections import defaultdict
 from skimage.morphology import binary_closing
+from openai import OpenAI
 
 import torch
 from torch import Tensor
@@ -37,10 +39,15 @@ from vlnce_baselines.common.utils import gather_list_and_concat, get_device
 from vlnce_baselines.map.semantic_prediction import GroundedSAM
 from vlnce_baselines.common.constraints import ConstraintsMonitor
 from vlnce_baselines.utils.constant import base_classes, map_channels
+from shared.resume_utils import append_episode_metric
+from shared.ssa import SSAController, ask_ssa_delegate, build_ssa_plan, execute_ssa_takeover
 
 from pyinstrument import Profiler
 import warnings
 warnings.filterwarnings('ignore')
+
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 
 @baseline_registry.register_trainer(name="ZS-Evaluator-mp")
@@ -80,6 +87,33 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         self.base_classes = copy.deepcopy(base_classes)
         self.min_constraint_steps = config.EVAL.MIN_CONSTRAINT_STEPS
         self.max_constraint_steps = config.EVAL.MAX_CONSTRAINT_STEPS
+        self.ssa_controller = SSAController(
+            enabled=getattr(config, "SSA_GUIDANCE", False),
+            workspace_root=Path(PROJECT_ROOT),
+            checkpoint_path=getattr(config, "SSA_CHECKPOINT", ""),
+            detect_threshold=float(getattr(config, "SSA_DETECT_THRESHOLD", 0.5)),
+            detector_model_source=getattr(config, "SSA_DETECTOR_MODEL_SOURCE", None),
+        )
+        self._ssa_delegate_client = None
+
+    def _ssa_infer(self, system_prompt: str, user_prompt: str) -> str:
+        if self._ssa_delegate_client is None:
+            base_url = os.environ.get("OPENAI_BASE_URL")
+            self._ssa_delegate_client = OpenAI(
+                api_key=os.environ.get("OPENAI_API_KEY", "not-needed"),
+                base_url=base_url,
+            )
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-2024-08-06")
+        response = self._ssa_delegate_client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=8,
+            temperature=0,
+        )
+        return response.choices[0].message.content or ""
     
     def _set_eval_config(self) -> None:
         print("set eval configs")
@@ -133,6 +167,12 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         metric['ndtw'] = np.exp(-dtw_distance / (len(gt_path) * 3.))
         metric['sdtw'] = metric['ndtw'] * metric['success']
         self.state_eps[ep_id] = metric
+        append_episode_metric(
+            self.config.EVAL_CKPT_PATH_DIR,
+            f"stats_ep_ckpt_{self.config.TASK_CONFIG.DATASET.SPLIT}_r{self.local_rank}_w{self.world_size}.json",
+            ep_id,
+            metric,
+        )
         print(self.state_eps[ep_id])
         
     def _initialize_policy(self) -> None:
@@ -476,6 +516,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         self.mapping_module.reset()
         self.value_map_module.reset()
         self.history_module.reset()
+        self.ssa_controller.reset()
     
     def rollout(self):
         """
@@ -616,7 +657,53 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     break
                 empty_value_map = 0
                 constraint_steps = 0
+
+            ssa_takeover_requested = False
+            ssa_plan_result = None
+            if getattr(self.config, "SSA_GUIDANCE", False):
+                ssa_proposal = self.ssa_controller.update_proposal(
+                    instruction=self.instruction,
+                    previous_output=self.sub_instructions[current_idx],
+                    previous_plan=str(current_constraint),
+                    rgb=np.asarray(obs[0]["rgb"]),
+                    depth=np.asarray(obs[0]["depth"]).squeeze(-1),
+                )
+                if ssa_proposal.get("available", False):
+                    should_delegate = ask_ssa_delegate(
+                        infer_fn=self._ssa_infer,
+                        instruction=self.instruction,
+                        current_stage=self.sub_instructions[current_idx],
+                        history=str(current_constraint),
+                        observation_hint=self.destination,
+                    )
+                    if should_delegate:
+                        ssa_plan_result = build_ssa_plan(self.envs, 0, ssa_proposal["estimate"])
+                        if ssa_plan_result.get("error") or not ssa_plan_result.get("actions"):
+                            print(f"[SSA] plan rejected | reason={ssa_plan_result.get('error', 'ssa_plan_empty')}")
+                            self.ssa_controller.used_this_episode = True
+                        else:
+                            ssa_takeover_requested = True
             
+            if ssa_takeover_requested and ssa_plan_result is not None:
+                takeover = execute_ssa_takeover(self.envs, env_index=0, plan_result=ssa_plan_result)
+                print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
+                obs = takeover.observations
+                dones = takeover.dones
+                infos = takeover.infos
+                if dones[0]:
+                    self._calculate_metric(infos)
+                    break
+                batch_obs = self._batch_obs(obs)
+                poses = torch.from_numpy(np.array([item['sensor_pose'] for item in obs])).float().to(self.device)
+                self.mapping_module(batch_obs, poses)
+                full_map, full_pose, one_step_full_map = \
+                    self.mapping_module.update_map(step, self.detected_classes, self.current_episode_id)
+                self.mapping_module.one_step_full_map.fill_(0.)
+                self.mapping_module.one_step_local_map.fill_(0.)
+                self.traversible, self.floor, self.frontiers = self._process_map(step, full_map[0])
+                self.one_step_floor = self._process_one_step_floor(one_step_full_map[0])
+                continue
+
             actions = []
             for _ in range(self.config.NUM_ENVIRONMENTS):
                 if self.keyboard_control:

@@ -5,6 +5,8 @@ import sys
 import json
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 MODELS_ROOT = os.path.join(PROJECT_ROOT, "models")
 GROUNDING_DINO_ROOT = os.path.join(MODELS_ROOT, "groundingdino")
 LOCAL_BERT_ROOT = os.path.join(MODELS_ROOT, "bert-base-uncased")
@@ -27,6 +29,7 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.config.default import get_config
 from vlnce_baselines.common.utils import seed_everything
+from shared.resume_utils import collect_completed_episode_ids, filter_remaining_episode_ids
 
 os.environ["HF_HUB_OFFLINE"] = os.environ.get("HF_HUB_OFFLINE", "1")
 os.environ["TRANSFORMERS_OFFLINE"] = os.environ.get("TRANSFORMERS_OFFLINE", "1")
@@ -54,7 +57,10 @@ except:
 
 
 def run_exp(exp_name: str, exp_config: str,
-            run_type: str, nprocesses: int, opts=None, cross_floor_filter: str = None) -> None:
+            run_type: str, nprocesses: int, opts=None, cross_floor_filter: str = None,
+            resume: bool = False, ssa_guidance: bool = False,
+            ssa_checkpoint: str = "", ssa_detect_threshold: float = 0.50,
+            ssa_detector_model_source: str = "") -> None:
     r"""Runs experiment given mode and config
     """
     config = get_config(exp_config, opts)
@@ -65,6 +71,10 @@ def run_exp(exp_name: str, exp_config: str,
     config.RESULTS_DIR += exp_name
     config.VIDEO_DIR += exp_name
     config.LOG_FILE = exp_name + '_' + config.LOG_FILE
+    config.SSA_GUIDANCE = bool(ssa_guidance)
+    config.SSA_CHECKPOINT = str(ssa_checkpoint)
+    config.SSA_DETECT_THRESHOLD = float(ssa_detect_threshold)
+    config.SSA_DETECTOR_MODEL_SOURCE = str(ssa_detector_model_source)
     config.freeze()
 
     os.makedirs(config.RESULTS_DIR, exist_ok=True)
@@ -104,6 +114,19 @@ def run_exp(exp_name: str, exp_config: str,
         before = len(episode_ids)
         episode_ids = [eid for eid in episode_ids if eid in cross_ids_str or int(eid) in cross_ids]
         print(f"Cross-floor filter [{cross_floor_filter}]: {before} -> {len(episode_ids)} episodes")
+
+    if resume:
+        completed_ids = collect_completed_episode_ids(config.CHECKPOINT_FOLDER)
+        if completed_ids:
+            before = len(episode_ids)
+            episode_ids = filter_remaining_episode_ids(episode_ids, completed_ids)
+            print(
+                f"Resume filter: {before} -> {len(episode_ids)} episodes "
+                f"(skipped {before - len(episode_ids)} completed from {config.CHECKPOINT_FOLDER})"
+            )
+            if not episode_ids:
+                print("Resume filter found no remaining episodes. Nothing to run.")
+                return
 
     split_episode_ids = [episode_ids[i::nprocesses] for i in range(nprocesses)]
 
@@ -204,6 +227,15 @@ if __name__ == "__main__":
         choices=["r2r-100", "r2r-all", "rxr-100", "rxr-all"],
         help="Only run cross-floor episodes",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from already completed episodes in the current experiment directory.",
+    )
+    parser.add_argument("--ssa-guidance", action="store_true", help="Enable SSA stair takeover.")
+    parser.add_argument("--ssa-checkpoint", type=str, default="SemanticSpatialAlignmentModule/outputs/20260604_121042/best_model.pt")
+    parser.add_argument("--ssa-detect-threshold", type=float, default=0.50)
+    parser.add_argument("--ssa-detector-model-source", type=str, default="")
     parser.add_argument(
         "opts",
         default=None,
