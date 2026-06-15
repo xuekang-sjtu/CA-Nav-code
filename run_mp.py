@@ -29,6 +29,7 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.config.default import get_config
 from vlnce_baselines.common.utils import seed_everything
+from shared.episode_filter import filter_episode_ids, parse_episode_ids
 from shared.resume_utils import collect_completed_episode_ids, filter_remaining_episode_ids
 
 os.environ["HF_HUB_OFFLINE"] = os.environ.get("HF_HUB_OFFLINE", "1")
@@ -59,8 +60,8 @@ except:
 def run_exp(exp_name: str, exp_config: str,
             run_type: str, nprocesses: int, opts=None, cross_floor_filter: str = None,
             resume: bool = False, ssa_guidance: bool = False,
-            ssa_checkpoint: str = "", ssa_detect_threshold: float = 0.50,
-            ssa_detector_model_source: str = "") -> None:
+            ssa_checkpoint: str = "", ssa_detect_threshold: float = 0.30,
+            ssa_detector_model_source: str = "", episode_id: str = None) -> None:
     r"""Runs experiment given mode and config
     """
     config = get_config(exp_config, opts)
@@ -114,6 +115,15 @@ def run_exp(exp_name: str, exp_config: str,
         before = len(episode_ids)
         episode_ids = [eid for eid in episode_ids if eid in cross_ids_str or int(eid) in cross_ids]
         print(f"Cross-floor filter [{cross_floor_filter}]: {before} -> {len(episode_ids)} episodes")
+
+    requested_episode_ids = parse_episode_ids(episode_id)
+    if requested_episode_ids:
+        before = len(episode_ids)
+        episode_ids = filter_episode_ids(episode_ids, requested_episode_ids)
+        print(
+            f"Episode-id filter [{','.join(requested_episode_ids)}]: "
+            f"{before} -> {len(episode_ids)} episodes"
+        )
 
     if resume:
         completed_ids = collect_completed_episode_ids(config.CHECKPOINT_FOLDER)
@@ -234,8 +244,14 @@ if __name__ == "__main__":
     )
     parser.add_argument("--ssa-guidance", action="store_true", help="Enable SSA stair takeover.")
     parser.add_argument("--ssa-checkpoint", type=str, default="SemanticSpatialAlignmentModule/outputs/20260604_121042/best_model.pt")
-    parser.add_argument("--ssa-detect-threshold", type=float, default=0.50)
+    parser.add_argument("--ssa-detect-threshold", type=float, default=0.30)
     parser.add_argument("--ssa-detector-model-source", type=str, default="")
+    parser.add_argument(
+        "--episode-id",
+        type=str,
+        default=None,
+        help="Comma-separated episode ids to evaluate, e.g. 1413,1370,1371.",
+    )
     parser.add_argument(
         "opts",
         default=None,

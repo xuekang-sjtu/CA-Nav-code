@@ -668,6 +668,16 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     rgb=np.asarray(obs[0]["rgb"]),
                     depth=np.asarray(obs[0]["depth"]).squeeze(-1),
                 )
+                self.ssa_controller.record_step_proposal(
+                    step=step,
+                    available=bool(ssa_proposal.get("available", False)),
+                    reason=str(ssa_proposal.get("reason", "")),
+                )
+                print(
+                    f"[SSA] step={step} episode={self.current_episode_id} "
+                    f"available={bool(ssa_proposal.get('available', False))} "
+                    f"reason={ssa_proposal.get('reason', '')}"
+                )
                 if ssa_proposal.get("available", False):
                     should_delegate = ask_ssa_delegate(
                         infer_fn=self._ssa_infer,
@@ -676,21 +686,46 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                         history=str(current_constraint),
                         observation_hint=self.destination,
                     )
+                    self.ssa_controller.record_delegate_decision(step=step, delegated=bool(should_delegate))
                     if should_delegate:
                         ssa_plan_result = build_ssa_plan(self.envs, 0, ssa_proposal["estimate"])
                         if ssa_plan_result.get("error") or not ssa_plan_result.get("actions"):
                             print(f"[SSA] plan rejected | reason={ssa_plan_result.get('error', 'ssa_plan_empty')}")
                             self.ssa_controller.used_this_episode = True
+                            self.ssa_controller.record_plan_outcome(
+                                step=step,
+                                accepted=False,
+                                reason=str(ssa_plan_result.get("error", "ssa_plan_empty")),
+                                planned_actions=0,
+                            )
                         else:
                             ssa_takeover_requested = True
+                            self.ssa_controller.record_plan_outcome(
+                                step=step,
+                                accepted=True,
+                                reason="planned",
+                                planned_actions=len(ssa_plan_result.get("actions", [])),
+                            )
+                            print(
+                                f"[SSA] step={step} episode={self.current_episode_id} delegated=yes planned_actions={len(ssa_plan_result.get('actions', []))}"
+                            )
+                    else:
+                        print(f"[SSA] step={step} episode={self.current_episode_id} delegated=no")
             
             if ssa_takeover_requested and ssa_plan_result is not None:
                 takeover = execute_ssa_takeover(self.envs, env_index=0, plan_result=ssa_plan_result)
                 print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
+                self.ssa_controller.record_takeover_result(
+                    step=step,
+                    success=bool(takeover.success),
+                    reason=str(takeover.reason),
+                    actions_executed=int(takeover.actions_executed),
+                )
                 obs = takeover.observations
                 dones = takeover.dones
                 infos = takeover.infos
                 if dones[0]:
+                    print(f"[SSA] episode summary | episode={self.current_episode_id} {self.ssa_controller.episode_summary_text()}")
                     self._calculate_metric(infos)
                     break
                 batch_obs = self._batch_obs(obs)
@@ -715,6 +750,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             obs, _, dones, infos = [list(x) for x in zip(*outputs)]
             
             if dones[0]:
+                print(f"[SSA] episode summary | episode={self.current_episode_id} {self.ssa_controller.episode_summary_text()}")
                 self._calculate_metric(infos)
                 break
             batch_obs = self._batch_obs(obs)
