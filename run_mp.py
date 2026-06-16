@@ -103,6 +103,7 @@ def run_exp(exp_name: str, exp_config: str,
         CROSS_FLOOR_DIR = os.path.join(PROJECT_ROOT, "datasets", "cross_floor_episodes")
         _FILTERS = {
             "r2r-100": "r2r_v1-2_opennav100_cross_floor.json",
+            "r2r-100-0.5": "r2r_v1-2_opennav100_cross_floor_0.5m.json",
             "r2r-all": "r2r_v1-3_cross_floor.json",
             "rxr-100": "rxr_opennav100_guide_cross_floor.json",
             "rxr-all": "rxr_val_unseen_guide_cross_floor.json",
@@ -234,7 +235,7 @@ if __name__ == "__main__":
         "--cross-floor-filter",
         type=str,
         default=None,
-        choices=["r2r-100", "r2r-all", "rxr-100", "rxr-all"],
+        choices=["r2r-100", "r2r-100-0.5", "r2r-all", "rxr-100", "rxr-all"],
         help="Only run cross-floor episodes",
     )
     parser.add_argument(

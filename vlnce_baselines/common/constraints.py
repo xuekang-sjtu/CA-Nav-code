@@ -92,9 +92,14 @@ class ConstraintsMonitor(nn.Module):
         """ 
         check by geometric relation
         """
+        if current_pose is None or last_pose is None:
+            return False
         heading = -1 * last_pose[-1]
-        current_position, _ = get_agent_position(current_pose, self.resolution)
-        last_position, _ = get_agent_position(last_pose, self.resolution)
+        try:
+            current_position, _ = get_agent_position(current_pose, self.resolution)
+            last_position, _ = get_agent_position(last_pose, self.resolution)
+        except (TypeError, ValueError):
+            return False
         position_vector = current_position - last_position
         displacement = np.linalg.norm(position_vector)
         heading_vector = angle_to_vector(heading)

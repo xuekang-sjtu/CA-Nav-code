@@ -104,16 +104,91 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 base_url=base_url,
             )
         model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-2024-08-06")
-        response = self._ssa_delegate_client.chat.completions.create(
-            model=model_name,
-            messages=[
+        max_tokens = int(os.environ.get("SSA_DELEGATE_MAX_TOKENS", "16"))
+        request_params = {
+            "model": model_name,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=8,
-            temperature=0,
-        )
-        return response.choices[0].message.content or ""
+            "max_tokens": max_tokens,
+            "temperature": 0,
+        }
+        extra_body = self._ssa_chat_extra_body(model_name)
+        if extra_body:
+            request_params["extra_body"] = extra_body
+        response = self._ssa_delegate_client.chat.completions.create(**request_params)
+        return self._extract_llm_text(response.choices[0].message)
+
+    @staticmethod
+    def _extract_llm_text(message) -> str:
+        content = getattr(message, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        for attr in ("reasoning_content", "reasoning", "thinking"):
+            value = getattr(message, attr, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        if hasattr(message, "model_dump"):
+            dumped = message.model_dump()
+            for key in ("content", "reasoning_content", "reasoning", "thinking"):
+                value = dumped.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    @staticmethod
+    def _ssa_chat_extra_body(model_name: str) -> Dict[str, Any]:
+        if "qwen" not in str(model_name or "").lower():
+            return {}
+        enable_thinking = os.environ.get("QWEN_ENABLE_THINKING", "0").strip().lower()
+        if enable_thinking in {"1", "true", "yes", "on"}:
+            return {}
+        base_url = os.environ.get("OPENAI_BASE_URL", "").lower()
+        if "dashscope.aliyuncs.com" in base_url:
+            return {"enable_thinking": False}
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+
+    def _enrich_last_ssa_plan_outcome(self, plan_result: Dict[str, Any]) -> None:
+        outcomes = self.ssa_controller.trace.get("plan_outcomes", [])
+        if not outcomes:
+            return
+        outcome = outcomes[-1]
+        for key in ("target_position", "target_yaw_deg", "planned_action_sequence", "planned_forward_actions", "start_pose"):
+            if key in plan_result:
+                outcome[key] = plan_result[key]
+
+    def _enrich_last_ssa_takeover_result(self, raw_result: Dict[str, Any]) -> None:
+        results = self.ssa_controller.trace.get("takeover_results", [])
+        if not results:
+            return
+        result = results[-1]
+        for key in (
+            "final_position",
+            "final_yaw_deg",
+            "target_position",
+            "target_yaw_deg",
+            "position_error_m",
+            "yaw_error_deg",
+            "planned_action_sequence",
+            "start_pose",
+        ):
+            if key in raw_result:
+                result[key] = raw_result[key]
+
+    def _write_ssa_trace(self, ep_id: str, metric: Dict[str, Any]) -> None:
+        if not getattr(self.config, "SSA_GUIDANCE", False):
+            return
+        trace_dir = os.path.join(self.config.EVAL_CKPT_PATH_DIR, "ssa_trace")
+        os.makedirs(trace_dir, exist_ok=True)
+        payload = {
+            "episode_id": str(ep_id),
+            "metric": metric,
+            "ssa_takeover_used": bool(getattr(self.ssa_controller, "used_this_episode", False)),
+            "ssa_trace": self.ssa_controller.episode_trace(),
+        }
+        with open(os.path.join(trace_dir, f"stats_{ep_id}.json"), "w") as f:
+            json.dump(payload, f, indent=2)
     
     def _set_eval_config(self) -> None:
         print("set eval configs")
@@ -173,6 +248,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             ep_id,
             metric,
         )
+        self._write_ssa_trace(ep_id, metric)
         print(self.state_eps[ep_id])
         
     def _initialize_policy(self) -> None:
@@ -552,6 +628,8 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             print(f"instr: {self.instruction}")
             print(f"sub_instr_{current_idx}: {self.sub_instructions[current_idx]}")
             constraint_steps += 1
+            if current_pose is None:
+                current_pose = full_pose[0]
             position = full_pose[0][:2] * 100 / self.resolution
             heading = full_pose[0][-1]
             print("full pose: ", full_pose[0])
@@ -621,7 +699,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                             self.classes = self._process_classes(self.base_classes, self.destination_class)
                         current_constraint = self.sub_constraints[str(current_idx)]
                         all_constraint_types = [item[0] for item in current_constraint]
-                        current_pose, start_check_pose = None, None
+                        current_pose, start_check_pose = full_pose[0], full_pose[0]
                     else:
                         current_constraint, all_constraint_types = [], []
                         print("all constraints are done")
@@ -698,6 +776,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                                 reason=str(ssa_plan_result.get("error", "ssa_plan_empty")),
                                 planned_actions=0,
                             )
+                            self._enrich_last_ssa_plan_outcome(ssa_plan_result)
                         else:
                             ssa_takeover_requested = True
                             self.ssa_controller.record_plan_outcome(
@@ -706,6 +785,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                                 reason="planned",
                                 planned_actions=len(ssa_plan_result.get("actions", [])),
                             )
+                            self._enrich_last_ssa_plan_outcome(ssa_plan_result)
                             print(
                                 f"[SSA] step={step} episode={self.current_episode_id} delegated=yes planned_actions={len(ssa_plan_result.get('actions', []))}"
                             )
@@ -721,6 +801,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     reason=str(takeover.reason),
                     actions_executed=int(takeover.actions_executed),
                 )
+                self._enrich_last_ssa_takeover_result(takeover.raw_result)
                 obs = takeover.observations
                 dones = takeover.dones
                 infos = takeover.infos
@@ -737,6 +818,8 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 self.mapping_module.one_step_local_map.fill_(0.)
                 self.traversible, self.floor, self.frontiers = self._process_map(step, full_map[0])
                 self.one_step_floor = self._process_one_step_floor(one_step_full_map[0])
+                last_pose = current_pose
+                current_pose = full_pose[0]
                 continue
 
             actions = []
