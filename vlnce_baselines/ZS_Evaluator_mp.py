@@ -39,6 +39,7 @@ from vlnce_baselines.common.utils import gather_list_and_concat, get_device
 from vlnce_baselines.map.semantic_prediction import GroundedSAM
 from vlnce_baselines.common.constraints import ConstraintsMonitor
 from vlnce_baselines.utils.constant import base_classes, map_channels
+from shared.eval_metrics import format_episode_metric
 from shared.resume_utils import append_episode_metric
 from shared.ssa import SSAController, ask_ssa_delegate, build_ssa_plan, execute_ssa_takeover
 
@@ -249,7 +250,8 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             metric,
         )
         self._write_ssa_trace(ep_id, metric)
-        print(self.state_eps[ep_id])
+        total = sum(self.envs.number_of_episodes) if getattr(self, "envs", None) is not None else None
+        print(format_episode_metric(ep_id, metric, stats=self.state_eps, total=total))
         
     def _initialize_policy(self) -> None:
         print("start to initialize policy")
