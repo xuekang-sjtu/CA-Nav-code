@@ -61,7 +61,8 @@ def run_exp(exp_name: str, exp_config: str,
             run_type: str, nprocesses: int, opts=None, cross_floor_filter: str = None,
             resume: bool = False, ssa_guidance: bool = False,
             ssa_checkpoint: str = "", ssa_detect_threshold: float = 0.30,
-            ssa_detector_model_source: str = "", episode_id: str = None) -> None:
+            ssa_detector_model_source: str = "", filter_behind: bool = False,
+            episode_id: str = None) -> None:
     r"""Runs experiment given mode and config
     """
     config = get_config(exp_config, opts)
@@ -76,6 +77,7 @@ def run_exp(exp_name: str, exp_config: str,
     config.SSA_CHECKPOINT = str(ssa_checkpoint)
     config.SSA_DETECT_THRESHOLD = float(ssa_detect_threshold)
     config.SSA_DETECTOR_MODEL_SOURCE = str(ssa_detector_model_source)
+    config.SSA_FILTER_BEHIND = bool(filter_behind)
     config.freeze()
 
     os.makedirs(config.RESULTS_DIR, exist_ok=True)
@@ -247,6 +249,7 @@ if __name__ == "__main__":
     parser.add_argument("--ssa-checkpoint", type=str, default="SemanticSpatialAlignmentModule/outputs/20260604_121042/best_model.pt")
     parser.add_argument("--ssa-detect-threshold", type=float, default=0.30)
     parser.add_argument("--ssa-detector-model-source", type=str, default="")
+    parser.add_argument("--filter-behind", action="store_true", help="Reject SSA proposals where the predicted target is behind the agent.")
     parser.add_argument(
         "--episode-id",
         type=str,

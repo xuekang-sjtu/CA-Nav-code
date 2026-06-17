@@ -5,6 +5,8 @@ import queue
 import copy
 import gzip
 import json
+import base64
+import io
 from pathlib import Path
 import numpy as np
 from tqdm import tqdm
@@ -41,7 +43,8 @@ from vlnce_baselines.common.constraints import ConstraintsMonitor
 from vlnce_baselines.utils.constant import base_classes, map_channels
 from shared.eval_metrics import format_episode_metric
 from shared.resume_utils import append_episode_metric
-from shared.ssa import SSAController, ask_ssa_delegate, build_ssa_plan, execute_ssa_takeover
+from shared.ssa import SSAController, ask_ssa_delegate_with_result, build_ssa_plan, execute_ssa_takeover
+from shared.ssa.trajectory import save_trajectory_debug
 
 from pyinstrument import Profiler
 import warnings
@@ -94,6 +97,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             checkpoint_path=getattr(config, "SSA_CHECKPOINT", ""),
             detect_threshold=float(getattr(config, "SSA_DETECT_THRESHOLD", 0.5)),
             detector_model_source=getattr(config, "SSA_DETECTOR_MODEL_SOURCE", None),
+            filter_behind=getattr(config, "SSA_FILTER_BEHIND", False),
         )
         self._ssa_delegate_client = None
 
@@ -120,6 +124,53 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             request_params["extra_body"] = extra_body
         response = self._ssa_delegate_client.chat.completions.create(**request_params)
         return self._extract_llm_text(response.choices[0].message)
+
+    def _ssa_infer_with_images(self, system_prompt: str, user_prompt: str, images: Dict[str, Any]) -> str:
+        if self._ssa_delegate_client is None:
+            api_key = os.getenv("OPENAI_API_KEY", "EMPTY")
+            self._ssa_delegate_client = OpenAI(
+                api_key=api_key,
+                base_url=os.getenv("OPENAI_BASE_URL", None),
+            )
+        model_name = os.getenv("OPENAI_MODEL", "gpt-4.1")
+        max_tokens = int(os.environ.get("SSA_DELEGATE_MAX_TOKENS", "32"))
+        user_content = [{"type": "text", "text": user_prompt}]
+        for image_dict in (images or {}).values():
+            rgb = image_dict.get("rgb") if isinstance(image_dict, dict) else image_dict
+            image_url = self._ssa_image_data_url(rgb)
+            if image_url:
+                user_content.append({"type": "image_url", "image_url": {"url": image_url}})
+        request_params = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+        }
+        extra_body = self._ssa_chat_extra_body(model_name)
+        if extra_body:
+            request_params["extra_body"] = extra_body
+        response = self._ssa_delegate_client.chat.completions.create(**request_params)
+        return self._extract_llm_text(response.choices[0].message)
+
+    @staticmethod
+    def _ssa_image_data_url(rgb: Any) -> str:
+        if rgb is None:
+            return ""
+        if isinstance(rgb, Image.Image):
+            image = rgb.convert("RGB")
+        else:
+            arr = np.asarray(rgb)
+            if arr.dtype != np.uint8:
+                arr = np.clip(arr, 0, 255).astype(np.uint8)
+            if arr.ndim == 3 and arr.shape[-1] > 3:
+                arr = arr[..., :3]
+            image = Image.fromarray(arr).convert("RGB")
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG")
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
 
     @staticmethod
     def _extract_llm_text(message) -> str:
@@ -155,7 +206,15 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         if not outcomes:
             return
         outcome = outcomes[-1]
-        for key in ("target_position", "target_yaw_deg", "planned_action_sequence", "planned_forward_actions", "start_pose"):
+        for key in (
+            "target_position",
+            "target_yaw_deg",
+            "planned_action_sequence",
+            "planned_forward_actions",
+            "planned_rollout_steps",
+            "rollout_steps",
+            "start_pose",
+        ):
             if key in plan_result:
                 outcome[key] = plan_result[key]
 
@@ -172,7 +231,11 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             "position_error_m",
             "yaw_error_deg",
             "planned_action_sequence",
+            "planned_rollout_steps",
+            "rollout_steps",
             "start_pose",
+            "ssa_trajectory",
+            "failure_diagnostics",
         ):
             if key in raw_result:
                 result[key] = raw_result[key]
@@ -250,6 +313,28 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             metric,
         )
         self._write_ssa_trace(ep_id, metric)
+        ssa_trace = self.ssa_controller.episode_trace()
+        ssa_trajectory = []
+        for result in ssa_trace.get("takeover_results", []):
+            ssa_trajectory.extend(result.get("ssa_trajectory", []) or [])
+        save_trajectory_debug(
+            output_dir=self.config.EVAL_CKPT_PATH_DIR,
+            episode_id=str(ep_id),
+            payload={
+                "episode_id": str(ep_id),
+                "scene_id": curr_eps[0].scene_id,
+                "metric": metric,
+                "start_position": pred_path[0].tolist() if len(pred_path) else [],
+                "goal_position": gt_path[-1].tolist() if len(gt_path) else [],
+                "agent_trajectory": [
+                    {"step": int(i), "source": "agent", "position": pos.tolist()}
+                    for i, pos in enumerate(pred_path)
+                ],
+                "ssa_trajectory": ssa_trajectory,
+                "expert_trajectory": gt_path.tolist(),
+                "ssa_trace": ssa_trace,
+            },
+        )
         total = sum(self.envs.number_of_episodes) if getattr(self, "envs", None) is not None else None
         print(format_episode_metric(ep_id, metric, stats=self.state_eps, total=total))
         
@@ -741,10 +826,12 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             ssa_takeover_requested = False
             ssa_plan_result = None
             if getattr(self.config, "SSA_GUIDANCE", False):
+                current_stage_text = str(self.sub_instructions[current_idx] if current_idx < len(self.sub_instructions) else "")
+                current_constraint_text = str(current_constraint)
                 ssa_proposal = self.ssa_controller.update_proposal(
-                    instruction=self.instruction,
-                    previous_output=self.sub_instructions[current_idx],
-                    previous_plan=str(current_constraint),
+                    instruction="",
+                    previous_output=current_stage_text,
+                    previous_plan=current_constraint_text,
                     rgb=np.asarray(obs[0]["rgb"]),
                     depth=np.asarray(obs[0]["depth"]).squeeze(-1),
                 )
@@ -759,17 +846,30 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     f"reason={ssa_proposal.get('reason', '')}"
                 )
                 if ssa_proposal.get("available", False):
-                    should_delegate = ask_ssa_delegate(
+                    delegate_result = ask_ssa_delegate_with_result(
                         infer_fn=self._ssa_infer,
-                        instruction=self.instruction,
-                        current_stage=self.sub_instructions[current_idx],
-                        history=str(current_constraint),
+                        image_infer_fn=self._ssa_infer_with_images,
+                        image=np.asarray(obs[0]["rgb"]),
+                        instruction="",
+                        current_stage=current_stage_text,
+                        history=current_constraint_text,
                         observation_hint=self.destination,
                     )
-                    self.ssa_controller.record_delegate_decision(step=step, delegated=bool(should_delegate))
+                    should_delegate = bool(delegate_result["delegated"])
+                    self.ssa_controller.record_delegate_decision(
+                        step=step,
+                        delegated=should_delegate,
+                        current_stage=current_stage_text,
+                        history=current_constraint_text,
+                        observation_hint=self.destination,
+                        prompt_has_rgb=bool(delegate_result.get("prompt_has_rgb", False)),
+                        raw_response=str(delegate_result.get("raw_response", "")),
+                        reason=str(delegate_result.get("decision_reason", "")),
+                    )
                     if should_delegate:
                         ssa_plan_result = build_ssa_plan(self.envs, 0, ssa_proposal["estimate"])
-                        if ssa_plan_result.get("error") or not ssa_plan_result.get("actions"):
+                        planned_steps = len(ssa_plan_result.get("rollout_steps", []) or []) or len(ssa_plan_result.get("actions", []) or [])
+                        if ssa_plan_result.get("error") or planned_steps == 0:
                             print(f"[SSA] plan rejected | reason={ssa_plan_result.get('error', 'ssa_plan_empty')}")
                             self.ssa_controller.used_this_episode = True
                             self.ssa_controller.record_plan_outcome(
@@ -785,11 +885,11 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                                 step=step,
                                 accepted=True,
                                 reason="planned",
-                                planned_actions=len(ssa_plan_result.get("actions", [])),
+                                planned_actions=planned_steps,
                             )
                             self._enrich_last_ssa_plan_outcome(ssa_plan_result)
                             print(
-                                f"[SSA] step={step} episode={self.current_episode_id} delegated=yes planned_actions={len(ssa_plan_result.get('actions', []))}"
+                                f"[SSA] step={step} episode={self.current_episode_id} delegated=yes planned_actions={planned_steps}"
                             )
                     else:
                         print(f"[SSA] step={step} episode={self.current_episode_id} delegated=no")
@@ -805,23 +905,52 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 )
                 self._enrich_last_ssa_takeover_result(takeover.raw_result)
                 obs = takeover.observations
+                # Sync SensorPoseSensor to current sim location after teleport.
+                # Without this, the next envs.step() computes a massive delta
+                # spanning the entire SSA teleport distance, corrupting the SLAM map.
+                self.envs.call_at(0, "ssa_sync_sensor_pose", {})
                 dones = takeover.dones
                 infos = takeover.infos
                 if dones[0]:
                     print(f"[SSA] episode summary | episode={self.current_episode_id} {self.ssa_controller.episode_summary_text()}")
                     self._calculate_metric(infos)
                     break
-                batch_obs = self._batch_obs(obs)
-                poses = torch.from_numpy(np.array([item['sensor_pose'] for item in obs])).float().to(self.device)
-                self.mapping_module(batch_obs, poses)
-                full_map, full_pose, one_step_full_map = \
-                    self.mapping_module.update_map(step, self.detected_classes, self.current_episode_id)
-                self.mapping_module.one_step_full_map.fill_(0.)
-                self.mapping_module.one_step_local_map.fill_(0.)
-                self.traversible, self.floor, self.frontiers = self._process_map(step, full_map[0])
-                self.one_step_floor = self._process_one_step_floor(one_step_full_map[0])
-                last_pose = current_pose
-                current_pose = full_pose[0]
+
+                # Update map continuously along each SSA waypoint to keep
+                # the SLAM state consistent after the teleport.
+                waypoint_obs = takeover.raw_result.get("waypoint_observations", [])
+                with open(os.path.join(self.config.EVAL_CKPT_PATH_DIR, "ssa_debug.log"), "a") as _df:
+                    _df.write(f"ep={self.current_episode_id} waypoint_obs_len={len(waypoint_obs)} keys={list(takeover.raw_result.keys())[:12]}\n")
+                    _df.flush()
+                if waypoint_obs:
+                    # Each waypoint gets a full map update cycle except the final
+                    # fill to avoid wiping out the last waypoint's one_step map.
+                    for wp_idx, wp_obs in enumerate(waypoint_obs):
+                        wp_batch = self._batch_obs([wp_obs])
+                        wp_poses = torch.from_numpy(np.array([wp_obs['sensor_pose']])).float().to(self.device)
+                        self.mapping_module(wp_batch, wp_poses)
+                        full_map, full_pose, one_step_full_map = \
+                            self.mapping_module.update_map(step + wp_idx, self.detected_classes, self.current_episode_id)
+                        self.traversible, self.floor, self.frontiers = self._process_map(step + wp_idx, full_map[0])
+                        self.one_step_floor = self._process_one_step_floor(one_step_full_map[0])
+                        last_pose = current_pose
+                        current_pose = full_pose[0]
+                    # Final fill after all waypoints processed.
+                    self.mapping_module.one_step_full_map.fill_(0.)
+                    self.mapping_module.one_step_local_map.fill_(0.)
+                else:
+                    # Fallback for old rollouts that didn't collect waypoint obs.
+                    batch_obs = self._batch_obs(obs)
+                    poses = torch.from_numpy(np.array([item['sensor_pose'] for item in obs])).float().to(self.device)
+                    self.mapping_module(batch_obs, poses)
+                    full_map, full_pose, one_step_full_map = \
+                        self.mapping_module.update_map(step, self.detected_classes, self.current_episode_id)
+                    self.mapping_module.one_step_full_map.fill_(0.)
+                    self.mapping_module.one_step_local_map.fill_(0.)
+                    self.traversible, self.floor, self.frontiers = self._process_map(step, full_map[0])
+                    self.one_step_floor = self._process_one_step_floor(one_step_full_map[0])
+                    last_pose = current_pose
+                    current_pose = full_pose[0]
                 continue
 
             actions = []
