@@ -919,9 +919,6 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 # Update map continuously along each SSA waypoint to keep
                 # the SLAM state consistent after the teleport.
                 waypoint_obs = takeover.raw_result.get("waypoint_observations", [])
-                with open(os.path.join(self.config.EVAL_CKPT_PATH_DIR, "ssa_debug.log"), "a") as _df:
-                    _df.write(f"ep={self.current_episode_id} waypoint_obs_len={len(waypoint_obs)} keys={list(takeover.raw_result.keys())[:12]}\n")
-                    _df.flush()
                 if waypoint_obs:
                     # Each waypoint gets a full map update cycle except the final
                     # fill to avoid wiping out the last waypoint's one_step map.
@@ -951,6 +948,20 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     self.one_step_floor = self._process_one_step_floor(one_step_full_map[0])
                     last_pose = current_pose
                     current_pose = full_pose[0]
+
+                # Refresh CA-Nav's value map and policy from the post-SSA state.
+                # Otherwise the next loop iteration can execute the action that
+                # was planned before SSA moved the agent.
+                blip_value = self.value_map_module.get_blip_value(Image.fromarray(obs[0]['rgb']), self.destination)
+                blip_value = blip_value.detach().cpu().numpy()
+                value_map = self.value_map_module(step, full_map[0], self.floor, self.one_step_floor, self.collision_map,
+                                      blip_value, full_pose[0], self.detected_classes, self.current_episode_id)
+                self._action = self.policy(self.value_map_module.value_map[1] * history_map, self.collision_map,
+                                        full_map[0], self.floor, self.traversible,
+                                        full_pose[0], self.frontiers, self.detected_classes,
+                                        self.destination_class, self.classes, search_destination,
+                                        one_step_full_map[0], self.current_detections,
+                                        self.current_episode_id, replan, step)
                 continue
 
             actions = []
