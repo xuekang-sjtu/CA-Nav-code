@@ -62,7 +62,7 @@ def run_exp(exp_name: str, exp_config: str,
             resume: bool = False, ssa_guidance: bool = False,
             ssa_checkpoint: str = "", ssa_detect_threshold: float = 0.30,
             ssa_detector_model_source: str = "", filter_behind: bool = False,
-            episode_id: str = None) -> None:
+            oracle_exit_enable: bool = False, episode_id: str = None) -> None:
     r"""Runs experiment given mode and config
     """
     config = get_config(exp_config, opts)
@@ -73,11 +73,14 @@ def run_exp(exp_name: str, exp_config: str,
     config.RESULTS_DIR += exp_name
     config.VIDEO_DIR += exp_name
     config.LOG_FILE = exp_name + '_' + config.LOG_FILE
+    if ssa_guidance and not str(ssa_checkpoint or "").strip():
+        raise ValueError("--ssa-guidance requires an explicit --ssa-checkpoint")
     config.SSA_GUIDANCE = bool(ssa_guidance)
     config.SSA_CHECKPOINT = str(ssa_checkpoint)
     config.SSA_DETECT_THRESHOLD = float(ssa_detect_threshold)
     config.SSA_DETECTOR_MODEL_SOURCE = str(ssa_detector_model_source)
     config.SSA_FILTER_BEHIND = bool(filter_behind)
+    config.SSA_ORACLE_EXIT_ENABLE = bool(oracle_exit_enable)
     config.freeze()
 
     os.makedirs(config.RESULTS_DIR, exist_ok=True)
@@ -246,9 +249,10 @@ if __name__ == "__main__":
         help="Resume from already completed episodes in the current experiment directory.",
     )
     parser.add_argument("--ssa-guidance", action="store_true", help="Enable SSA stair takeover.")
-    parser.add_argument("--ssa-checkpoint", type=str, default="SemanticSpatialAlignmentModule/outputs/20260604_121042/best_model.pt")
+    parser.add_argument("--ssa-checkpoint", type=str, default="")
     parser.add_argument("--ssa-detect-threshold", type=float, default=0.30)
     parser.add_argument("--ssa-detector-model-source", type=str, default="")
+    parser.add_argument("--oracle-exit-enable", action="store_true", help="Use expert-path oracle exit as SSA diagnostic fallback.")
     parser.add_argument("--filter-behind", action="store_true", help="Reject SSA proposals where the predicted target is behind the agent.")
     parser.add_argument(
         "--episode-id",

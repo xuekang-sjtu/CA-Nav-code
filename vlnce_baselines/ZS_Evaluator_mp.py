@@ -43,7 +43,8 @@ from vlnce_baselines.common.constraints import ConstraintsMonitor
 from vlnce_baselines.utils.constant import base_classes, map_channels
 from shared.eval_metrics import format_episode_metric
 from shared.resume_utils import append_episode_metric
-from shared.ssa import SSAController, ask_ssa_delegate_with_result, build_ssa_plan, execute_ssa_takeover
+from shared.ssa import SSAController, execute_ssa_takeover
+from shared.ssa.oracle import select_oracle_exit_for_episode
 from shared.ssa.trajectory import save_trajectory_debug
 
 from pyinstrument import Profiler
@@ -98,6 +99,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             detect_threshold=float(getattr(config, "SSA_DETECT_THRESHOLD", 0.5)),
             detector_model_source=getattr(config, "SSA_DETECTOR_MODEL_SOURCE", None),
             filter_behind=getattr(config, "SSA_FILTER_BEHIND", False),
+            oracle_exit_enabled=getattr(config, "SSA_ORACLE_EXIT_ENABLE", False),
         )
         self._ssa_delegate_client = None
 
@@ -243,15 +245,18 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
     def _write_ssa_trace(self, ep_id: str, metric: Dict[str, Any]) -> None:
         if not getattr(self.config, "SSA_GUIDANCE", False):
             return
-        trace_dir = os.path.join(self.config.EVAL_CKPT_PATH_DIR, "ssa_trace")
+        trace_dir = os.path.join(self.config.EVAL_CKPT_PATH_DIR, "ssa_traces")
         os.makedirs(trace_dir, exist_ok=True)
+        trace_path = os.path.join(trace_dir, f"episode_{ep_id}.json")
         payload = {
             "episode_id": str(ep_id),
             "metric": metric,
             "ssa_takeover_used": bool(getattr(self.ssa_controller, "used_this_episode", False)),
             "ssa_trace": self.ssa_controller.episode_trace(),
         }
-        with open(os.path.join(trace_dir, f"stats_{ep_id}.json"), "w") as f:
+        metric["ssa_summary"] = self.ssa_controller.episode_summary()
+        metric["ssa_trace_path"] = trace_path
+        with open(trace_path, "w") as f:
             json.dump(payload, f, indent=2)
     
     def _set_eval_config(self) -> None:
@@ -305,6 +310,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         metric['spl'] = metric['success'] * gt_length / max(gt_length, metric['path_length'])
         metric['ndtw'] = np.exp(-dtw_distance / (len(gt_path) * 3.))
         metric['sdtw'] = metric['ndtw'] * metric['success']
+        self._write_ssa_trace(ep_id, metric)
         self.state_eps[ep_id] = metric
         append_episode_metric(
             self.config.EVAL_CKPT_PATH_DIR,
@@ -312,7 +318,6 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             ep_id,
             metric,
         )
-        self._write_ssa_trace(ep_id, metric)
         ssa_trace = self.ssa_controller.episode_trace()
         ssa_trajectory = []
         for result in ssa_trace.get("takeover_results", []):
@@ -824,7 +829,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 constraint_steps = 0
 
             ssa_takeover_requested = False
-            ssa_plan_result = None
+            ssa_takeover_direction = "unknown"
             if getattr(self.config, "SSA_GUIDANCE", False):
                 current_stage_text = str(self.sub_instructions[current_idx] if current_idx < len(self.sub_instructions) else "")
                 current_constraint_text = str(current_constraint)
@@ -834,6 +839,12 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     previous_plan=current_constraint_text,
                     rgb=np.asarray(obs[0]["rgb"]),
                     depth=np.asarray(obs[0]["depth"]).squeeze(-1),
+                    delegate_infer_fn=self._ssa_infer,
+                    delegate_image_infer_fn=self._ssa_infer_with_images,
+                    delegate_image={"rgb": obs[0]["rgb"]},
+                    delegate_current_stage=current_stage_text,
+                    delegate_history=current_constraint_text,
+                    delegate_observation_hint=self.destination,
                 )
                 self.ssa_controller.record_step_proposal(
                     step=step,
@@ -846,69 +857,55 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     f"reason={ssa_proposal.get('reason', '')}"
                 )
                 if ssa_proposal.get("available", False):
-                    delegate_result = ask_ssa_delegate_with_result(
-                        infer_fn=self._ssa_infer,
-                        image_infer_fn=self._ssa_infer_with_images,
-                        image=np.asarray(obs[0]["rgb"]),
-                        instruction="",
-                        current_stage=current_stage_text,
-                        history=current_constraint_text,
-                        observation_hint=self.destination,
-                    )
-                    should_delegate = bool(delegate_result["delegated"])
+                    delegate_info = ssa_proposal.get("delegate", {}) if isinstance(ssa_proposal.get("delegate"), dict) else {}
+                    delegate_reason = "vlm_fallback" if ssa_proposal.get("reason") == "delegate_vlm" else "rule_and_dino_gate"
+                    should_delegate = True
+                    ssa_takeover_direction = str(ssa_proposal.get("direction", "unknown"))
                     self.ssa_controller.record_delegate_decision(
                         step=step,
                         delegated=should_delegate,
                         current_stage=current_stage_text,
                         history=current_constraint_text,
                         observation_hint=self.destination,
-                        prompt_has_rgb=bool(delegate_result.get("prompt_has_rgb", False)),
-                        raw_response=str(delegate_result.get("raw_response", "")),
-                        reason=str(delegate_result.get("decision_reason", "")),
+                        prompt_has_rgb=bool(delegate_info.get("prompt_has_rgb", False)),
+                        raw_response=str(delegate_info.get("raw_response", "")),
+                        reason=delegate_reason,
+                        direction=ssa_takeover_direction,
                     )
                     if should_delegate:
-                        ssa_plan_result = build_ssa_plan(self.envs, 0, ssa_proposal["estimate"])
-                        planned_steps = len(ssa_plan_result.get("rollout_steps", []) or []) or len(ssa_plan_result.get("actions", []) or [])
-                        if ssa_plan_result.get("error") or planned_steps == 0:
-                            print(f"[SSA] plan rejected | reason={ssa_plan_result.get('error', 'ssa_plan_empty')}")
-                            self.ssa_controller.used_this_episode = True
-                            self.ssa_controller.record_plan_outcome(
-                                step=step,
-                                accepted=False,
-                                reason=str(ssa_plan_result.get("error", "ssa_plan_empty")),
-                                planned_actions=0,
-                            )
-                            self._enrich_last_ssa_plan_outcome(ssa_plan_result)
-                        else:
-                            ssa_takeover_requested = True
-                            self.ssa_controller.record_plan_outcome(
-                                step=step,
-                                accepted=True,
-                                reason="planned",
-                                planned_actions=planned_steps,
-                            )
-                            self._enrich_last_ssa_plan_outcome(ssa_plan_result)
-                            print(
-                                f"[SSA] step={step} episode={self.current_episode_id} delegated=yes planned_actions={planned_steps}"
-                            )
+                        ssa_takeover_requested = True
+                        self.ssa_controller.record_plan_outcome(
+                            step=step,
+                            accepted=True,
+                            reason="closed_loop_ready",
+                            planned_actions=0,
+                        )
+                        print(
+                            f"[SSA] step={step} episode={self.current_episode_id} delegated=yes mode=closed_loop direction={ssa_takeover_direction}"
+                        )
                     else:
                         print(f"[SSA] step={step} episode={self.current_episode_id} delegated=no")
             
-            if ssa_takeover_requested and ssa_plan_result is not None:
-                takeover = execute_ssa_takeover(self.envs, env_index=0, plan_result=ssa_plan_result)
-                print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
-                self.ssa_controller.record_takeover_result(
+            if ssa_takeover_requested:
+                def _ssa_get_forward_view(observation_item):
+                    return np.asarray(observation_item["rgb"]), np.asarray(observation_item["depth"]).squeeze(-1)
+
+                takeover = execute_ssa_takeover(
+                    self.envs,
+                    env_index=0,
+                    controller=self.ssa_controller,
+                    initial_observation=obs[0],
+                    get_forward_view=_ssa_get_forward_view,
+                    direction=ssa_takeover_direction,
                     step=step,
-                    success=bool(takeover.success),
-                    reason=str(takeover.reason),
-                    actions_executed=int(takeover.actions_executed),
+                    oracle_exit=select_oracle_exit_for_episode(
+                        self.envs.current_episodes()[0],
+                        current_position=self.envs.call_at(0, "get_agent_info", {}).get("position"),
+                        direction=ssa_takeover_direction,
+                    ),
                 )
-                self._enrich_last_ssa_takeover_result(takeover.raw_result)
+                print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
                 obs = takeover.observations
-                # Sync SensorPoseSensor to current sim location after teleport.
-                # Without this, the next envs.step() computes a massive delta
-                # spanning the entire SSA teleport distance, corrupting the SLAM map.
-                self.envs.call_at(0, "ssa_sync_sensor_pose", {})
                 dones = takeover.dones
                 infos = takeover.infos
                 if dones[0]:
@@ -916,13 +913,9 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     self._calculate_metric(infos)
                     break
 
-                # Update map continuously along each SSA waypoint to keep
-                # the SLAM state consistent after the teleport.
-                waypoint_obs = takeover.raw_result.get("waypoint_observations", [])
-                if waypoint_obs:
-                    # Each waypoint gets a full map update cycle except the final
-                    # fill to avoid wiping out the last waypoint's one_step map.
-                    for wp_idx, wp_obs in enumerate(waypoint_obs):
+                step_observations = takeover.raw_result.get("step_observations", [])
+                if step_observations:
+                    for wp_idx, wp_obs in enumerate(step_observations):
                         wp_batch = self._batch_obs([wp_obs])
                         wp_poses = torch.from_numpy(np.array([wp_obs['sensor_pose']])).float().to(self.device)
                         self.mapping_module(wp_batch, wp_poses)
@@ -932,11 +925,9 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                         self.one_step_floor = self._process_one_step_floor(one_step_full_map[0])
                         last_pose = current_pose
                         current_pose = full_pose[0]
-                    # Final fill after all waypoints processed.
                     self.mapping_module.one_step_full_map.fill_(0.)
                     self.mapping_module.one_step_local_map.fill_(0.)
                 else:
-                    # Fallback for old rollouts that didn't collect waypoint obs.
                     batch_obs = self._batch_obs(obs)
                     poses = torch.from_numpy(np.array([item['sensor_pose'] for item in obs])).float().to(self.device)
                     self.mapping_module(batch_obs, poses)
