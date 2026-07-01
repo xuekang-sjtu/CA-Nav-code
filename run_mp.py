@@ -29,8 +29,11 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 
 from vlnce_baselines.config.default import get_config
 from vlnce_baselines.common.utils import seed_everything
-from shared.episode_filter import filter_episode_ids, parse_episode_ids
-from shared.resume_utils import collect_completed_episode_ids, filter_remaining_episode_ids
+from shared.cross_floor_filter import get_cross_floor_episode_ids
+from shared.episode_filter import parse_episode_ids
+from shared.evaluation_selection import filter_candidate_ids, filter_ids_by_cross_floor
+from shared.results import aggregate_numeric_metrics
+from shared.resume_utils import collect_completed_episode_ids
 
 os.environ["HF_HUB_OFFLINE"] = os.environ.get("HF_HUB_OFFLINE", "1")
 os.environ["TRANSFORMERS_OFFLINE"] = os.environ.get("TRANSFORMERS_OFFLINE", "1")
@@ -105,27 +108,15 @@ def run_exp(exp_name: str, exp_config: str,
 
     # Apply cross-floor filter
     if cross_floor_filter is not None:
-        CROSS_FLOOR_DIR = os.path.join(PROJECT_ROOT, "datasets", "cross_floor_episodes")
-        _FILTERS = {
-            "r2r-100": "r2r_v1-2_opennav100_cross_floor.json",
-            "r2r-100-0.5": "r2r_v1-2_opennav100_cross_floor_0.5m.json",
-            "r2r-all": "r2r_v1-3_cross_floor.json",
-            "rxr-100": "rxr_opennav100_guide_cross_floor.json",
-            "rxr-all": "rxr_val_unseen_guide_cross_floor.json",
-        }
-        filepath = os.path.join(CROSS_FLOOR_DIR, _FILTERS[cross_floor_filter])
-        with open(filepath) as f:
-            cross_ids = set(json.load(f))
-        # Build string set for matching (JSON has ints for r2r, strings for rxr-all)
-        cross_ids_str = set(str(x) for x in cross_ids)
+        cross_ids = get_cross_floor_episode_ids(cross_floor_filter)
         before = len(episode_ids)
-        episode_ids = [eid for eid in episode_ids if eid in cross_ids_str or int(eid) in cross_ids]
+        episode_ids = filter_ids_by_cross_floor(episode_ids, cross_ids)
         print(f"Cross-floor filter [{cross_floor_filter}]: {before} -> {len(episode_ids)} episodes")
 
     requested_episode_ids = parse_episode_ids(episode_id)
     if requested_episode_ids:
         before = len(episode_ids)
-        episode_ids = filter_episode_ids(episode_ids, requested_episode_ids)
+        episode_ids = filter_candidate_ids(episode_ids, requested_ids=requested_episode_ids)
         print(
             f"Episode-id filter [{','.join(requested_episode_ids)}]: "
             f"{before} -> {len(episode_ids)} episodes"
@@ -135,7 +126,7 @@ def run_exp(exp_name: str, exp_config: str,
         completed_ids = collect_completed_episode_ids(config.CHECKPOINT_FOLDER)
         if completed_ids:
             before = len(episode_ids)
-            episode_ids = filter_remaining_episode_ids(episode_ids, completed_ids)
+            episode_ids = filter_candidate_ids(episode_ids, completed_ids=completed_ids)
             print(
                 f"Resume filter: {before} -> {len(episode_ids)} episodes "
                 f"(skipped {before - len(episode_ids)} completed from {config.CHECKPOINT_FOLDER})"
@@ -169,21 +160,7 @@ def run_exp(exp_name: str, exp_config: str,
     for fn in fns:
         with open(fn, 'r') as f:
             summary.update(json.load(f))
-    summary_metrics = {
-        "steps_taken": [],
-        "distance_to_goal": [],
-        "success": [],
-        "oracle_success": [],
-        "path_length": [],
-        "spl": [],
-        "ndtw": [],
-        "sdtw": [],
-    }
-    for epid, metric in summary.items():
-        for k, v in metric.items():
-            summary_metrics[k].append(v)
-    for k, v in summary_metrics.items():
-        summary_metrics[k] = np.mean(v)
+    summary_metrics = aggregate_numeric_metrics(summary)
     pprint(summary_metrics)
     with open(config.CHECKPOINT_FOLDER + '/stats_ckpt_val_unseen.json', 'w') as f:
         json.dump(summary_metrics, f, indent=2)
