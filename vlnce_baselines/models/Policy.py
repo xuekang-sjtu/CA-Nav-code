@@ -42,6 +42,17 @@ class FusionMapPolicy(nn.Module):
         self.max_destination_socre = -1e5
         self.max_destination_confidence = -1.
         self.vis_image = np.ones((self.map_shape, self.map_shape, 3)).astype(np.uint8) * 255
+
+    def _pose_to_map_position(self, full_pose: Sequence) -> np.ndarray:
+        x, y = full_pose[:2]
+        col = x * (100 / self.resolution)
+        row = y * (100 / self.resolution)
+        return np.array(
+            [
+                np.clip(row, 0, self.map_shape - 1),
+                np.clip(col, 0, self.map_shape - 1),
+            ]
+        )
     
     def _get_action(self, 
                     full_pose: Sequence, 
@@ -109,8 +120,8 @@ class FusionMapPolicy(nn.Module):
         
         """
         x, y, heading = full_pose
-        x, y = x * (100 / self.resolution), y * (100 / self.resolution)
-        position = np.array([y, x])
+        position = self._pose_to_map_position(full_pose)
+        y, x = position
         heading = -1 * full_pose[-1]
         rotation_matrix = np.array([[0, -1], 
                                     [1, 0]])
@@ -253,15 +264,14 @@ class FusionMapPolicy(nn.Module):
                 replan: bool,
                 step: int):
         
-        x, y, heading = full_pose
-        x, y = x * (100 / self.resolution), y * (100 / self.resolution)
-        position = np.array([y, x])
+        position = self._pose_to_map_position(full_pose)
         best_waypoint, best_value, sorted_waypoints = self.superpixel_policy(full_map, traversible, value_map, collision_map,
                                                                              detected_classes, position, self.fmm_dist, replan,
                                                                              step, current_episode_id)
-        print("current_position's value: ", value_map[min(int(y), self.map_shape - 1), min(int(x), self.map_shape - 1)])
+        y, x = position.astype(int)
+        print("current_position's value: ", value_map[y, x])
         print("current pose: ", full_pose)
-        current_value = value_map[min(int(y), self.map_shape - 1), min(int(x), self.map_shape - 1)]
+        current_value = value_map[y, x]
         max_value = np.max(value_map)
         if search_destination:
             destination_waypoint, score = self._search_destination(destination, classes, current_value, max_value,

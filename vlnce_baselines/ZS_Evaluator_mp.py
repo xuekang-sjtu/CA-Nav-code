@@ -42,7 +42,7 @@ from vlnce_baselines.map.semantic_prediction import GroundedSAM
 from vlnce_baselines.common.constraints import ConstraintsMonitor
 from vlnce_baselines.utils.constant import base_classes, map_channels
 from shared.eval_metrics import format_episode_metric
-from shared.resume_utils import append_episode_metric
+from shared.resume_utils import append_episode_metric, load_episode_metrics
 from shared.ssa import SSAController, execute_ssa_takeover
 from shared.ssa.oracle import select_oracle_exit_for_episode
 from shared.ssa.trajectory import save_trajectory_debug
@@ -725,7 +725,8 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             position = full_pose[0][:2] * 100 / self.resolution
             heading = full_pose[0][-1]
             print("full pose: ", full_pose[0])
-            y, x = min(int(position[0]), self.map_shape[0] - 1), min(int(position[1]), self.map_shape[1] - 1)
+            y = int(np.clip(int(position[0]), 0, self.map_shape[0] - 1))
+            x = int(np.clip(int(position[1]), 0, self.map_shape[1] - 1))
             self.visited[x, y] = 1
             trajectory_points.append((y, x))
             direction_points.append(np.array([x, y]))
@@ -1035,8 +1036,12 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         self.envs.close()
         
         split = self.config.TASK_CONFIG.DATASET.SPLIT
+        filename = f"stats_ep_ckpt_{split}_r{self.local_rank}_w{self.world_size}.json"
+        merged_state_eps = load_episode_metrics(self.config.EVAL_CKPT_PATH_DIR, filename)
+        merged_state_eps.update({str(key): value for key, value in self.state_eps.items()})
+        self.state_eps = merged_state_eps
         fname = os.path.join(self.config.EVAL_CKPT_PATH_DIR, 
-                             f"stats_ep_ckpt_{split}_r{self.local_rank}_w{self.world_size}.json"
+                             filename
                              )
         with open(fname, "w") as f:
             json.dump(self.state_eps, f, indent=2)
