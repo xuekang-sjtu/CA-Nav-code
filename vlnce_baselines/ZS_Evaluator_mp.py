@@ -112,7 +112,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 base_url=base_url,
             )
         model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-2024-08-06")
-        max_tokens = int(os.environ.get("SSA_DELEGATE_MAX_TOKENS", "16"))
+        max_tokens = int(os.environ.get("SSA_DELEGATE_MAX_TOKENS", "128"))
         request_params = {
             "model": model_name,
             "messages": [
@@ -136,7 +136,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 base_url=os.getenv("OPENAI_BASE_URL", None),
             )
         model_name = os.getenv("OPENAI_MODEL", "gpt-4.1")
-        max_tokens = int(os.environ.get("SSA_DELEGATE_MAX_TOKENS", "32"))
+        max_tokens = int(os.environ.get("SSA_DELEGATE_MAX_TOKENS", "128"))
         user_content = [{"type": "text", "text": user_prompt}]
         for image_dict in (images or {}).values():
             rgb = image_dict.get("rgb") if isinstance(image_dict, dict) else image_dict
