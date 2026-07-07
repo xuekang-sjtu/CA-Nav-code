@@ -65,6 +65,7 @@ def run_exp(exp_name: str, exp_config: str,
             resume: bool = False, ssa_guidance: bool = False,
             ssa_checkpoint: str = "", ssa_detect_threshold: float = 0.30,
             ssa_detector_model_source: str = "", filter_behind: bool = False,
+            ssa_max_takeovers_per_episode: int = 1,
             oracle_exit_enable: bool = False, episode_id: str = None) -> None:
     r"""Runs experiment given mode and config
     """
@@ -84,6 +85,7 @@ def run_exp(exp_name: str, exp_config: str,
     config.SSA_DETECTOR_MODEL_SOURCE = str(ssa_detector_model_source)
     config.SSA_FILTER_BEHIND = bool(filter_behind)
     config.SSA_ORACLE_EXIT_ENABLE = bool(oracle_exit_enable)
+    config.SSA_MAX_TAKEOVERS_PER_EPISODE = int(ssa_max_takeovers_per_episode)
     config.freeze()
 
     os.makedirs(config.RESULTS_DIR, exist_ok=True)
@@ -123,13 +125,13 @@ def run_exp(exp_name: str, exp_config: str,
         )
 
     if resume:
-        completed_ids = collect_completed_episode_ids(config.CHECKPOINT_FOLDER)
+        completed_ids = collect_completed_episode_ids(config.EVAL_CKPT_PATH_DIR)
         if completed_ids:
             before = len(episode_ids)
             episode_ids = filter_candidate_ids(episode_ids, completed_ids=completed_ids)
             print(
                 f"Resume filter: {before} -> {len(episode_ids)} episodes "
-                f"(skipped {before - len(episode_ids)} completed from {config.CHECKPOINT_FOLDER})"
+                f"(skipped {before - len(episode_ids)} completed from {config.EVAL_CKPT_PATH_DIR})"
             )
             if not episode_ids:
                 print("Resume filter found no remaining episodes. Nothing to run.")
@@ -155,14 +157,14 @@ def run_exp(exp_name: str, exp_config: str,
     pool.map(worker, configs)
     pool.close()
     pool.join()
-    fns = glob.glob(config.CHECKPOINT_FOLDER + '/stats_ep_ckpt_*.json')
+    fns = glob.glob(os.path.join(config.EVAL_CKPT_PATH_DIR, "stats_ep_ckpt_*.json"))
     summary = {}
     for fn in fns:
         with open(fn, 'r') as f:
             summary.update(json.load(f))
     summary_metrics = aggregate_numeric_metrics(summary)
     pprint(summary_metrics)
-    with open(config.CHECKPOINT_FOLDER + '/stats_ckpt_val_unseen.json', 'w') as f:
+    with open(os.path.join(config.EVAL_CKPT_PATH_DIR, "stats_ckpt_val_unseen.json"), 'w') as f:
         json.dump(summary_metrics, f, indent=2)
 
 def worker(config):
@@ -229,6 +231,7 @@ if __name__ == "__main__":
     parser.add_argument("--ssa-checkpoint", type=str, default="")
     parser.add_argument("--ssa-detect-threshold", type=float, default=0.30)
     parser.add_argument("--ssa-detector-model-source", type=str, default="")
+    parser.add_argument("--ssa-max-takeovers-per-episode", type=int, default=1)
     parser.add_argument("--oracle-exit-enable", action="store_true", help="Use expert-path oracle exit as SSA diagnostic fallback.")
     parser.add_argument("--filter-behind", action="store_true", help="Reject SSA proposals where the predicted target is behind the agent.")
     parser.add_argument(

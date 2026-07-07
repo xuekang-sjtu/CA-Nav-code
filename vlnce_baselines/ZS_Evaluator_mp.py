@@ -100,6 +100,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             detector_model_source=getattr(config, "SSA_DETECTOR_MODEL_SOURCE", None),
             filter_behind=getattr(config, "SSA_FILTER_BEHIND", False),
             oracle_exit_enabled=getattr(config, "SSA_ORACLE_EXIT_ENABLE", False),
+            max_takeovers_per_episode=int(getattr(config, "SSA_MAX_TAKEOVERS_PER_EPISODE", 1)),
         )
         self._ssa_delegate_client = None
 
@@ -250,12 +251,31 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         trace_path = os.path.join(trace_dir, f"episode_{ep_id}.json")
         payload = {
             "episode_id": str(ep_id),
+            "completed": True,
             "metric": metric,
             "ssa_takeover_used": bool(getattr(self.ssa_controller, "used_this_episode", False)),
             "ssa_trace": self.ssa_controller.episode_trace(),
         }
         metric["ssa_summary"] = self.ssa_controller.episode_summary()
         metric["ssa_trace_path"] = trace_path
+        with open(trace_path, "w") as f:
+            json.dump(payload, f, indent=2)
+
+    def _write_ssa_live_trace(self, step: int, reason: str = "") -> None:
+        if not getattr(self.config, "SSA_GUIDANCE", False) or self.current_episode_id is None:
+            return
+        trace_dir = os.path.join(self.config.EVAL_CKPT_PATH_DIR, "ssa_traces")
+        os.makedirs(trace_dir, exist_ok=True)
+        trace_path = os.path.join(trace_dir, f"episode_{self.current_episode_id}.json")
+        payload = {
+            "episode_id": str(self.current_episode_id),
+            "completed": False,
+            "step": int(step),
+            "reason": str(reason or ""),
+            "metric": None,
+            "ssa_takeover_used": bool(getattr(self.ssa_controller, "used_this_episode", False)),
+            "ssa_trace": self.ssa_controller.episode_trace(),
+        }
         with open(trace_path, "w") as f:
             json.dump(payload, f, indent=2)
     
@@ -852,6 +872,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     available=bool(ssa_proposal.get("available", False)),
                     reason=str(ssa_proposal.get("reason", "")),
                 )
+                self._write_ssa_live_trace(step, str(ssa_proposal.get("reason", "")))
                 print(
                     f"[SSA] step={step} episode={self.current_episode_id} "
                     f"available={bool(ssa_proposal.get('available', False))} "
@@ -859,7 +880,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 )
                 if ssa_proposal.get("available", False):
                     delegate_info = ssa_proposal.get("delegate", {}) if isinstance(ssa_proposal.get("delegate"), dict) else {}
-                    delegate_reason = "vlm_fallback" if ssa_proposal.get("reason") == "delegate_vlm" else "rule_and_dino_gate"
+                    delegate_reason = str(delegate_info.get("decision_reason", "vlm_gate"))
                     should_delegate = True
                     ssa_takeover_direction = str(ssa_proposal.get("direction", "unknown"))
                     self.ssa_controller.record_delegate_decision(
@@ -886,6 +907,20 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                         )
                     else:
                         print(f"[SSA] step={step} episode={self.current_episode_id} delegated=no")
+                else:
+                    delegate_info = ssa_proposal.get("delegate", {}) if isinstance(ssa_proposal.get("delegate"), dict) else {}
+                    if delegate_info:
+                        self.ssa_controller.record_delegate_decision(
+                            step=step,
+                            delegated=False,
+                            current_stage=current_stage_text,
+                            history=current_constraint_text,
+                            observation_hint=self.destination,
+                            prompt_has_rgb=bool(delegate_info.get("prompt_has_rgb", False)),
+                            raw_response=str(delegate_info.get("raw_response", "")),
+                            reason=str(delegate_info.get("decision_reason", ssa_proposal.get("reason", ""))),
+                            direction=str(delegate_info.get("direction", "unknown")),
+                        )
             
             if ssa_takeover_requested:
                 def _ssa_get_forward_view(observation_item):
@@ -906,6 +941,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     ),
                 )
                 print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
+                self._write_ssa_live_trace(step, str(takeover.reason))
                 obs = takeover.observations
                 dones = takeover.dones
                 infos = takeover.infos
