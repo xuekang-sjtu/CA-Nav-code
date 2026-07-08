@@ -66,7 +66,9 @@ def run_exp(exp_name: str, exp_config: str,
             ssa_checkpoint: str = "", ssa_detect_threshold: float = 0.30,
             ssa_detector_model_source: str = "", filter_behind: bool = False,
             ssa_max_takeovers_per_episode: int = 1,
-            oracle_exit_enable: bool = False, episode_id: str = None) -> None:
+            save_episode_gif: bool = True, gif_max_width: int = 640,
+            gif_duration: float = 0.4, oracle_exit_enable: bool = False,
+            episode_id: str = None) -> None:
     r"""Runs experiment given mode and config
     """
     config = get_config(exp_config, opts)
@@ -86,6 +88,9 @@ def run_exp(exp_name: str, exp_config: str,
     config.SSA_FILTER_BEHIND = bool(filter_behind)
     config.SSA_ORACLE_EXIT_ENABLE = bool(oracle_exit_enable)
     config.SSA_MAX_TAKEOVERS_PER_EPISODE = int(ssa_max_takeovers_per_episode)
+    config.SAVE_EPISODE_GIF = bool(save_episode_gif)
+    config.EPISODE_GIF_MAX_WIDTH = int(gif_max_width)
+    config.EPISODE_GIF_DURATION = float(gif_duration)
     config.freeze()
 
     os.makedirs(config.RESULTS_DIR, exist_ok=True)
@@ -234,6 +239,10 @@ if __name__ == "__main__":
     parser.add_argument("--ssa-max-takeovers-per-episode", type=int, default=1)
     parser.add_argument("--oracle-exit-enable", action="store_true", help="Use expert-path oracle exit as SSA diagnostic fallback.")
     parser.add_argument("--filter-behind", action="store_true", help="Reject SSA proposals where the predicted target is behind the agent.")
+    parser.add_argument("--save-episode-gif", dest="save_episode_gif", action="store_true", default=True, help="Save one low-level RGB GIF per evaluated episode.")
+    parser.add_argument("--no-save-episode-gif", dest="save_episode_gif", action="store_false", help="Disable episode GIF recording.")
+    parser.add_argument("--gif-max-width", type=int, default=640, help="Maximum saved GIF frame width.")
+    parser.add_argument("--gif-duration", type=float, default=0.4, help="GIF frame duration in seconds.")
     parser.add_argument(
         "--episode-id",
         type=str,

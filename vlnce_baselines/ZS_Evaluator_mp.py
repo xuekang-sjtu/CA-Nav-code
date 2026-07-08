@@ -46,6 +46,7 @@ from shared.resume_utils import append_episode_metric, load_episode_metrics
 from shared.ssa import SSAController, execute_ssa_takeover
 from shared.ssa.oracle import select_oracle_exit_for_episode
 from shared.ssa.trajectory import save_trajectory_debug
+from shared.visualization import EpisodeGifRecorder
 
 from pyinstrument import Profiler
 import warnings
@@ -72,6 +73,12 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         self.max_step = config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS
         self.map_shape = (config.MAP.MAP_SIZE_CM // self.resolution,
                           config.MAP.MAP_SIZE_CM // self.resolution)
+        self.episode_gif = EpisodeGifRecorder(
+            os.path.join(config.EVAL_CKPT_PATH_DIR, "episode_gifs"),
+            enabled=bool(getattr(config, "SAVE_EPISODE_GIF", True)),
+            max_width=int(getattr(config, "EPISODE_GIF_MAX_WIDTH", 640)),
+            duration=float(getattr(config, "EPISODE_GIF_DURATION", 0.4)),
+        )
         
         self.trans = transforms.Compose([transforms.ToPILImage(), 
                                          transforms.Resize(
@@ -330,6 +337,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         metric['spl'] = metric['success'] * gt_length / max(gt_length, metric['path_length'])
         metric['ndtw'] = np.exp(-dtw_distance / (len(gt_path) * 3.))
         metric['sdtw'] = metric['ndtw'] * metric['success']
+        self.episode_gif.save(ep_id)
         self._write_ssa_trace(ep_id, metric)
         self.state_eps[ep_id] = metric
         append_episode_metric(
@@ -634,6 +642,8 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         self._process_llm_reply(obs[0])
         self.current_episode_id = self.envs.current_episodes()[0].episode_id
         print("current episode id: ", self.current_episode_id)
+        self.episode_gif.reset()
+        self.episode_gif.add_observation(obs[0], label=f"start ep={self.current_episode_id}")
         
         self.mapping_module.init_map_and_pose(num_detected_classes=len(self.detected_classes))
         batch_obs = self._batch_obs(obs)
@@ -652,6 +662,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 actions.append({"action": HabitatSimActions.TURN_LEFT})
             outputs = self.envs.step(actions)
             obs, _, dones, infos = [list(x) for x in zip(*outputs)]
+            self.episode_gif.add_observation(obs[0], label=f"look step={step}")
             if dones[0]:
                 return full_pose, obs, dones, infos
             batch_obs = self._batch_obs(obs)
@@ -705,6 +716,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         self.value_map_module.reset()
         self.history_module.reset()
         self.ssa_controller.reset()
+        self.episode_gif.reset()
     
     def rollout(self):
         """
@@ -942,6 +954,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 )
                 print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
                 self._write_ssa_live_trace(step, str(takeover.reason))
+                self.episode_gif.extend_frames(takeover.rgb_frames, source="ssa")
                 obs = takeover.observations
                 dones = takeover.dones
                 infos = takeover.infos
@@ -1001,6 +1014,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     actions.append(self._action)
             outputs = self.envs.step(actions)
             obs, _, dones, infos = [list(x) for x in zip(*outputs)]
+            self.episode_gif.add_observation(obs[0], label=f"baseline step={step}")
             
             if dones[0]:
                 print(f"[SSA] episode summary | episode={self.current_episode_id} {self.ssa_controller.episode_summary_text()}")
