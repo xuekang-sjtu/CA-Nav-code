@@ -71,6 +71,16 @@ class VLNCEZeroShotEnv(habitat.RLEnv):
             keep_agent_at_new_pose,
         )
 
+    def _ssa_set_agent_pose(self, position, yaw=None):
+        sim = self._env.sim
+        init_state = sim.get_agent_state()
+        rotation = init_state.rotation
+        if yaw is not None:
+            angle = float(yaw) + np.pi
+            rotation = np.quaternion(np.cos(angle / 2.0), 0, np.sin(angle / 2.0), 0)
+        sim.set_agent_state(np.asarray(position, dtype=np.float32), rotation)
+        return sim.get_sensor_observations()
+
     def change_current_path(self, new_path: Any, collisions: Any):
         if 'current_path' not in self._env.current_episode.info.keys():
             self._env.current_episode.info['current_path'] = [np.array(self._env.current_episode.start_position)]
