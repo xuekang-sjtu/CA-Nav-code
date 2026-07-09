@@ -54,7 +54,10 @@ class ConstraintsMonitor(nn.Module):
         """ 
         use VQA to check scene type
         """
-        image = Image.fromarray(obs['rgb'].astype(np.uint8))
+        rgb = np.asarray(obs["rgb"])
+        if rgb.ndim != 3 or rgb.shape[2] not in (3, 4):
+            raise ValueError(f"BLIP-VQA requires HxWx3/4 RGB input, got shape {rgb.shape}")
+        image = Image.fromarray(rgb[:, :, :3].astype(np.uint8), mode="RGB")
         question = f"Are you in the {scene}"
         image = self.vis_processors(image).unsqueeze(0).to(self.device)
         question = self.text_processors(question)

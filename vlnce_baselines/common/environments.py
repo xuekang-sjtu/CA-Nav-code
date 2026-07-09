@@ -8,7 +8,7 @@ from habitat import Config, Dataset
 from habitat.core.embodied_task import Metrics
 from habitat.core.simulator import Observations
 from habitat_baselines.common.baseline_registry import baseline_registry
-from habitat_extensions.pose_utils import get_sim_location
+from habitat_extensions.pose_utils import get_pose_change, get_sim_location
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
@@ -73,13 +73,19 @@ class VLNCEZeroShotEnv(habitat.RLEnv):
 
     def _ssa_set_agent_pose(self, position, yaw=None):
         sim = self._env.sim
+        previous_sim_location = self.sensor_pose_sensor.last_sim_location
         init_state = sim.get_agent_state()
         rotation = init_state.rotation
         if yaw is not None:
             angle = float(yaw) + np.pi
             rotation = np.quaternion(np.cos(angle / 2.0), 0, np.sin(angle / 2.0), 0)
         sim.set_agent_state(np.asarray(position, dtype=np.float32), rotation)
-        return sim.get_sensor_observations()
+        dx, dy, do, current_sim_location = get_pose_change(sim, previous_sim_location)
+        self.sensor_pose_sensor.last_sim_location = current_sim_location
+        self.sensor_pose_sensor.sensor_pose = [dx, dy, do]
+        observations = sim.get_sensor_observations()
+        observations["sensor_pose"] = np.asarray([dx, dy, do], dtype=np.float32)
+        return observations
 
     def change_current_path(self, new_path: Any, collisions: Any):
         if 'current_path' not in self._env.current_episode.info.keys():

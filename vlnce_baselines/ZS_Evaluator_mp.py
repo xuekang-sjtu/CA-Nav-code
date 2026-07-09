@@ -44,7 +44,7 @@ from vlnce_baselines.utils.constant import base_classes, map_channels
 from shared.eval_metrics import format_episode_metric
 from shared.resume_utils import append_episode_metric, load_episode_metrics
 from shared.ssa import SSAController, execute_ssa_takeover
-from shared.ssa.oracle import select_oracle_exit_for_episode
+from shared.ssa.oracle import proposal_oracle_segment
 from shared.ssa.trajectory import save_trajectory_debug
 from shared.visualization import EpisodeGifRecorder
 
@@ -183,6 +183,21 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         buf = io.BytesIO()
         image.save(buf, format="JPEG")
         return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    @staticmethod
+    def _rgb_array(rgb: Any) -> np.ndarray:
+        arr = np.asarray(rgb)
+        if arr.ndim == 2:
+            arr = np.repeat(arr[:, :, None], 3, axis=2)
+        if arr.ndim == 3 and arr.shape[-1] > 3:
+            arr = arr[..., :3]
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        return arr
+
+    @classmethod
+    def _rgb_image(cls, rgb: Any) -> Image.Image:
+        return Image.fromarray(cls._rgb_array(rgb)).convert("RGB")
 
     @staticmethod
     def _extract_llm_text(message) -> str:
@@ -389,10 +404,12 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         self.constraints_monitor = ConstraintsMonitor(self.config, self.device)
         
     def _concat_obs(self, obs: Observations) -> np.ndarray:
-        rgb = obs['rgb'].astype(np.uint8)
-        depth = obs['depth']
+        rgb = self._rgb_array(obs['rgb'])
+        depth = np.asarray(obs['depth'])
+        if depth.ndim == 2:
+            depth = depth[:, :, None]
         state = np.concatenate((rgb, depth), axis=2).transpose(2, 0, 1) # (h, w, c)->(c, h, w)
-        
+
         return state
     
     def _preprocess_state(self, state: np.ndarray) -> np.ndarray:
@@ -677,7 +694,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             self.traversible, self.floor, self.frontiers = self._process_map(step, full_map[0])
             self.one_step_floor = self._process_one_step_floor(one_step_full_map[0])
                         
-            blip_value = self.value_map_module.get_blip_value(Image.fromarray(obs[0]['rgb']), self.destination)
+            blip_value = self.value_map_module.get_blip_value(self._rgb_image(obs[0]['rgb']), self.destination)
             blip_value = blip_value.detach().cpu().numpy()
             value_map = self.value_map_module(step, full_map[0], self.floor, self.one_step_floor, 
                                               self.collision_map, blip_value, full_pose[0], 
@@ -872,11 +889,11 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     instruction="",
                     previous_output=current_stage_text,
                     previous_plan=current_constraint_text,
-                    rgb=np.asarray(obs[0]["rgb"]),
+                    rgb=self._rgb_array(obs[0]["rgb"]),
                     depth=np.asarray(obs[0]["depth"]).squeeze(-1),
                     delegate_infer_fn=self._ssa_infer,
                     delegate_image_infer_fn=self._ssa_infer_with_images,
-                    delegate_image={"rgb": obs[0]["rgb"]},
+                    delegate_image={"rgb": self._rgb_array(obs[0]["rgb"])},
                     delegate_current_stage=current_stage_text,
                     delegate_history=current_constraint_text,
                     delegate_observation_hint=self.destination,
@@ -940,8 +957,16 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             
             if ssa_takeover_requested:
                 def _ssa_get_forward_view(observation_item):
-                    return np.asarray(observation_item["rgb"]), np.asarray(observation_item["depth"]).squeeze(-1)
+                    return self._rgb_array(observation_item["rgb"]), np.asarray(observation_item["depth"]).squeeze(-1)
 
+                ssa_segment = proposal_oracle_segment(
+                    ssa_proposal,
+                    required=(
+                        bool(getattr(self.config, "SSA_EXPERT_ENTRY_POSE", False))
+                        or bool(getattr(self.config, "SSA_ORACLE_EXIT_ENABLE", False))
+                    ),
+                    context="CA-Nav",
+                )
                 takeover = execute_ssa_takeover(
                     self.envs,
                     env_index=0,
@@ -950,12 +975,8 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     get_forward_view=_ssa_get_forward_view,
                     direction=ssa_takeover_direction,
                     step=step,
-                    oracle_exit=select_oracle_exit_for_episode(
-                        self.envs.current_episodes()[0],
-                        current_position=self.envs.call_at(0, "get_agent_info", {}).get("position"),
-                        direction=ssa_takeover_direction,
-                    ),
-                    expert_entry_pose=ssa_proposal.get("_oracle_segment") if getattr(self.config, "SSA_EXPERT_ENTRY_POSE", False) else None,
+                    oracle_exit=ssa_segment if getattr(self.config, "SSA_ORACLE_EXIT_ENABLE", False) else None,
+                    expert_entry_pose=ssa_segment if getattr(self.config, "SSA_EXPERT_ENTRY_POSE", False) else None,
                 )
                 print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
                 self._write_ssa_live_trace(step, str(takeover.reason))
@@ -998,7 +1019,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 # Refresh CA-Nav's value map and policy from the post-SSA state.
                 # Otherwise the next loop iteration can execute the action that
                 # was planned before SSA moved the agent.
-                blip_value = self.value_map_module.get_blip_value(Image.fromarray(obs[0]['rgb']), self.destination)
+                blip_value = self.value_map_module.get_blip_value(self._rgb_image(obs[0]['rgb']), self.destination)
                 blip_value = blip_value.detach().cpu().numpy()
                 value_map = self.value_map_module(step, full_map[0], self.floor, self.one_step_floor, self.collision_map,
                                       blip_value, full_pose[0], self.detected_classes, self.current_episode_id)
@@ -1060,7 +1081,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                                                 self.mapping_module.map_shape)
                 self.collision_map = np.logical_or(self.collision_map, collision_map)
             
-            blip_value = self.value_map_module.get_blip_value(Image.fromarray(obs[0]['rgb']), self.destination)
+            blip_value = self.value_map_module.get_blip_value(self._rgb_image(obs[0]['rgb']), self.destination)
             blip_value = blip_value.detach().cpu().numpy()
             value_map = self.value_map_module(step, full_map[0], self.floor, self.one_step_floor, self.collision_map, 
                                   blip_value, full_pose[0], self.detected_classes, self.current_episode_id)
