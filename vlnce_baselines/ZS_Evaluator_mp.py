@@ -886,7 +886,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 current_stage_text = str(self.sub_instructions[current_idx] if current_idx < len(self.sub_instructions) else "")
                 current_constraint_text = str(current_constraint)
                 ssa_proposal = self.ssa_controller.update_proposal(
-                    instruction="",
+                    instruction=self.instruction,
                     previous_output=current_stage_text,
                     previous_plan=current_constraint_text,
                     rgb=self._rgb_array(obs[0]["rgb"]),
@@ -977,8 +977,10 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     step=step,
                     oracle_exit=ssa_segment if getattr(self.config, "SSA_ORACLE_EXIT_ENABLE", False) else None,
                     expert_entry_pose=ssa_segment if getattr(self.config, "SSA_EXPERT_ENTRY_POSE", False) else None,
+                    env_turn_degrees=float(self.config.TASK_CONFIG.SIMULATOR.TURN_ANGLE),
                 )
                 print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
+                ssa_handoff = self.ssa_controller.latest_handoff()
                 self._write_ssa_live_trace(step, str(takeover.reason))
                 self.episode_gif.extend_frames(takeover.rgb_frames, source="ssa")
                 obs = takeover.observations
@@ -1019,6 +1021,11 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                 # Refresh CA-Nav's value map and policy from the post-SSA state.
                 # Otherwise the next loop iteration can execute the action that
                 # was planned before SSA moved the agent.
+                if ssa_handoff.get("success", False):
+                    constraint_steps = 0
+                    start_to_wait = False
+                    direction_map_exist = False
+                    replan = True
                 blip_value = self.value_map_module.get_blip_value(self._rgb_image(obs[0]['rgb']), self.destination)
                 blip_value = blip_value.detach().cpu().numpy()
                 value_map = self.value_map_module(step, full_map[0], self.floor, self.one_step_floor, self.collision_map,
