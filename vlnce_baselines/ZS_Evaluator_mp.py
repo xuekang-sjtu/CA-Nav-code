@@ -43,9 +43,16 @@ from vlnce_baselines.common.constraints import ConstraintsMonitor
 from vlnce_baselines.utils.constant import base_classes, map_channels
 from shared.eval_metrics import format_episode_metric
 from shared.resume_utils import append_episode_metric, load_episode_metrics
-from shared.ssa import SSAController, execute_ssa_takeover
+from shared.ssa import (
+    SSAController,
+    execute_oracle_expert_replay,
+    execute_ssa_takeover,
+    expert_actions_for_segment,
+    expert_record_for_episode,
+)
 from shared.ssa.oracle import proposal_oracle_segment
 from shared.ssa.trajectory import save_trajectory_debug
+from shared.trajectory_metrics import metric_positions
 from shared.visualization import EpisodeGifRecorder
 
 from pyinstrument import Profiler
@@ -110,6 +117,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
             oracle_entry_gate_enabled=getattr(config, "SSA_ORACLE_ENTRY_GATE_ENABLE", True),
             oracle_entry_radius_m=getattr(config, "SSA_ORACLE_ENTRY_RADIUS", 1.5),
             max_takeovers_per_episode=int(getattr(config, "SSA_MAX_TAKEOVERS_PER_EPISODE", 1)),
+            oracle_expert_replay=bool(getattr(config, "SSA_ORACLE_EXPERT_REPLAY", False)),
         )
         self._ssa_delegate_client = None
 
@@ -340,7 +348,7 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
         info = infos[0]
         ep_id = curr_eps[0].episode_id
         gt_path = np.array(self.gt_data[str(ep_id)]['locations']).astype(float)
-        pred_path = np.array(info['position']['position'])
+        pred_path = metric_positions(np.array(info['position']['position']))
         distances = np.array(info['position']['distance'])
         gt_length = distances[0]
         dtw_distance = fastdtw(pred_path, gt_path, dist=NDTW.euclidean_distance)[0]
@@ -963,22 +971,36 @@ class ZeroShotVlnEvaluatorMP(BaseTrainer):
                     ssa_proposal,
                     required=(
                         bool(getattr(self.config, "SSA_EXPERT_ENTRY_POSE", False))
+                        or bool(getattr(self.config, "SSA_ORACLE_EXPERT_REPLAY", False))
                         or bool(getattr(self.config, "SSA_ORACLE_EXIT_ENABLE", False))
                     ),
                     context="CA-Nav",
                 )
-                takeover = execute_ssa_takeover(
-                    self.envs,
+                takeover_kwargs = dict(
+                    envs=self.envs,
                     env_index=0,
                     controller=self.ssa_controller,
                     initial_observation=obs[0],
                     get_forward_view=_ssa_get_forward_view,
                     direction=ssa_takeover_direction,
                     step=step,
-                    oracle_exit=ssa_segment if getattr(self.config, "SSA_ORACLE_EXIT_ENABLE", False) else None,
-                    expert_entry_pose=ssa_segment if getattr(self.config, "SSA_EXPERT_ENTRY_POSE", False) else None,
-                    env_turn_degrees=float(self.config.TASK_CONFIG.SIMULATOR.TURN_ANGLE),
                 )
+                if getattr(self.config, "SSA_ORACLE_EXPERT_REPLAY", False):
+                    episode_record = expert_record_for_episode(
+                        self.gt_data, self.current_episode_id
+                    )
+                    takeover = execute_oracle_expert_replay(
+                        **takeover_kwargs,
+                        oracle_segment=ssa_segment,
+                        expert_actions=expert_actions_for_segment(episode_record, ssa_segment),
+                    )
+                else:
+                    takeover = execute_ssa_takeover(
+                        **takeover_kwargs,
+                        oracle_exit=ssa_segment if getattr(self.config, "SSA_ORACLE_EXIT_ENABLE", False) else None,
+                        expert_entry_pose=ssa_segment if getattr(self.config, "SSA_EXPERT_ENTRY_POSE", False) else None,
+                        env_turn_degrees=float(self.config.TASK_CONFIG.SIMULATOR.TURN_ANGLE),
+                    )
                 print(f"[SSA] takeover finished | success={takeover.success} reason={takeover.reason} actions={takeover.actions_executed}")
                 ssa_handoff = self.ssa_controller.latest_handoff()
                 self._write_ssa_live_trace(step, str(takeover.reason))

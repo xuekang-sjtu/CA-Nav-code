@@ -7,6 +7,7 @@ import sys
 from habitat import Config, Dataset
 from habitat.core.embodied_task import Metrics
 from habitat.core.simulator import Observations
+from habitat.sims.habitat_simulator.actions import HabitatSimActions
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_extensions.pose_utils import get_pose_change, get_sim_location
 
@@ -86,6 +87,19 @@ class VLNCEZeroShotEnv(habitat.RLEnv):
         observations = sim.get_sensor_observations()
         observations["sensor_pose"] = np.asarray([dx, dy, do], dtype=np.float32)
         return observations
+
+    def _ssa_set_turn_angle(self, degrees):
+        action_space = self._env.sim.get_agent(0).agent_config.action_space
+        left = action_space[HabitatSimActions.TURN_LEFT].actuation
+        right = action_space[HabitatSimActions.TURN_RIGHT].actuation
+        if not np.isclose(left.amount, right.amount):
+            raise RuntimeError(
+                f"CA-Nav turn actions disagree: left={left.amount} right={right.amount}"
+            )
+        previous = float(left.amount)
+        left.amount = float(degrees)
+        right.amount = float(degrees)
+        return previous
 
     def change_current_path(self, new_path: Any, collisions: Any):
         if 'current_path' not in self._env.current_episode.info.keys():
