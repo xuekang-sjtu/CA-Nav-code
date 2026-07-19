@@ -204,11 +204,16 @@ class RxRVLNCEDatasetV1(Dataset):
         if config is None:
             return
 
+        llm_replys_filename = config.LLM_REPLYS_PATH
         for role in self.extract_roles_from_config(config):
             with gzip.open(
                 config.DATA_PATH.format(split=config.SPLIT, role=role), "rt"
             ) as f:
-                self.from_json(f.read(), scenes_dir=config.SCENES_DIR)
+                self.from_json(
+                    f.read(),
+                    scenes_dir=config.SCENES_DIR,
+                    llm_replys_filename=llm_replys_filename,
+                )
 
         if ALL_SCENES_MASK not in config.CONTENT_SCENES:
             scenes_to_load = set(config.CONTENT_SCENES)
@@ -236,16 +241,20 @@ class RxRVLNCEDatasetV1(Dataset):
             ]
 
     def from_json(
-        self, json_str: str, scenes_dir: Optional[str] = None
+        self,
+        json_str: str,
+        scenes_dir: Optional[str] = None,
+        llm_replys_filename: Optional[str] = None,
     ) -> None:
 
         deserialized = json.loads(json_str)
+        llm_replys = {}
+        if llm_replys_filename:
+            with open(llm_replys_filename, "r") as f:
+                llm_replys = json.load(f)
 
         for episode in deserialized["episodes"]:
-            # Filter instruction dict to only fields InstructionData accepts
-            if 'instruction' in episode and isinstance(episode['instruction'], dict):
-                episode['instruction'] = {k: v for k, v in episode['instruction'].items()
-                                          if k in ('instruction_text', 'instruction_tokens')}
+            episode["llm_reply"] = llm_replys.get(str(episode["episode_id"]), {})
             episode = VLNExtendedEpisode(**episode)
 
             if scenes_dir is not None:
@@ -256,17 +265,7 @@ class RxRVLNCEDatasetV1(Dataset):
 
                 episode.scene_id = os.path.join(scenes_dir, episode.scene_id)
 
-            # Convert instruction to InstructionData (always, since attr doesn't coerce)
-            if hasattr(episode.instruction, 'instruction_text'):
-                episode.instruction = InstructionData(
-                    instruction_text=episode.instruction.instruction_text,
-                    instruction_tokens=episode.instruction.instruction_tokens
-                )
-            elif isinstance(episode.instruction, dict):
-                episode.instruction = InstructionData(
-                    instruction_text=episode.instruction['instruction_text'],
-                    instruction_tokens=episode.instruction.get('instruction_tokens', [])
-                )
+            episode.instruction = ExtendedInstructionData(**episode.instruction)
             episode.instruction.split = self.config.SPLIT
             if episode.goals is not None:
                 for g_index, goal in enumerate(episode.goals):
